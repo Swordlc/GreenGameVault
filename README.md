@@ -31,11 +31,26 @@
 
 | 文件 | 说明 |
 | --- | --- |
-| `GreenGameVault_Setup_<版本>.exe` | **推荐**。安装版，可自选安装目录；数据（`SaveData/`）就在安装目录旁边 |
-| `GreenGameVault_Portable_<版本>.exe` | 单文件便携版。数据放在**这个 exe 所在目录**的 `SaveData/` 里 |
+| `GreenGameVault_Setup_<版本>.exe` | 安装版，可自选安装目录 |
+| `GreenGameVault_<版本>_Portable_x64.zip` | **绿色包**：解压到任意目录，双击里面的 `GreenGameVault.exe` 即用 |
 
-> 两者都是「绿色」的：`SaveData/` 跟着程序走，不写注册表、不往 C 盘塞数据。
-> 想换机器直接把整个目录拷走即可。
+> 两者都是「绿色」的：数据（`SaveData/`）就在程序旁边，不写注册表、不往 C 盘塞数据。
+> 换个机器把整个目录（或解压后的文件夹）拷走即可。
+
+**绿色包怎么用**：解压出来的文件夹里就是安装后应有的一切（`GreenGameVault.exe` +
+`configs/` + `disguise/` + `locales/` + `resources/` …）。
+
+```
+D:\Games\GreenGameVault\        ← 解压到这里
+├── GreenGameVault.exe          ← 双击它
+├── configs/                    ← 页面配置（随包分发）
+├── disguise/                   ← 伪装壁纸目录（图片需自备，见下文）
+├── locales/  resources/  ...
+└── SaveData/                   ← 首次启动后自动生成，你的游戏库就在这儿
+```
+
+> ⚠️ 建议**双击 exe 启动**（或把快捷方式的「起始位置」指向该文件夹）。
+> 数据目录是按**启动时的工作目录**定位的，从别处用奇怪的 cwd 拉起它会读不到库。
 
 ## 从源码构建
 
@@ -91,9 +106,15 @@ $cache = "$env:LOCALAPPDATA\electron-builder\Cache\winCodeSign"
 
 | 项 | 位置 |
 | --- | --- |
-| 数据根 | 开发版 = 项目根；安装版 = 安装目录；便携版 = 便携 exe 所在目录 |
+| 数据根 | 开发版 = 项目根；安装版 = 安装目录；绿色包 = 解压出来的文件夹 |
 | 存档 | `<数据根>/SaveData/`（`database.db` + `Settings/` + `games/covers/` + `Game/Screenshots/`） |
 | 用户配置 | `%APPDATA%/green-game-vault`（与上游的 `green-resources-manager` 相互独立） |
+
+> 数据根由**启动时的工作目录**决定（`process.cwd()`），所以请双击程序目录里的 exe 启动，
+> 或确保快捷方式的「起始位置」指向程序目录。
+> 例外：旧版单文件 `portable` 包会把程序解压到 `%TEMP%` 再运行，此时改用
+> `PORTABLE_EXECUTABLE_DIR`（见 `electron/utils/app-root.js`）把数据固定到 exe 旁边 ——
+> 该防御逻辑保留着，但现在的发行版已不再使用单文件 portable 目标。
 
 ## 已知限制
 

@@ -51,7 +51,7 @@
       "output": "dist-electron/v${version}",
       "buildResources": "build"
     },
-    "artifactName": "${productName} ${version}.${ext}",
+    "artifactName": "${productName}_${version}_Portable_x64.${ext}",
     "files": [
       "dist/**/*",
       "electron/**/*",
@@ -92,16 +92,13 @@
           ]
         },
         {
-          "target": "portable",
+          "target": "zip",
           "arch": [
             "x64"
           ]
         }
       ],
       "icon": "public/butter-icon.ico"
-    },
-    "portable": {
-      "artifactName": "${productName}_Portable_${version}.${ext}"
     }
   }
 }

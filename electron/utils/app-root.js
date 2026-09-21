@@ -1,34 +1,40 @@
 /**
  * @module AppRoot
- * @description 统一「数据根目录」与「资源根目录」，解决便携版 SaveData 会被清掉的问题。
+ * @description 统一「资源根目录」与「数据根目录」，让数据稳定地待在程序旁边。
  *
  * ## 背景（2026-09-22 实测）
  *
- * 单文件便携版（electron-builder 的 `portable` target）会把整个 App **自解压到
- * `%TEMP%\<随机名>\` 再运行**，于是 `process.cwd()` 指向那个临时解包目录：
+ * 上游沿用「数据目录 = `process.cwd()`」的约定，这在**双击启动**时恰好等于程序目录，
+ * 所以一直没暴露问题。但实测证明它很脆：
+ *
+ * | 启动方式 | cwd | 上游行为 |
+ * | --- | --- | --- |
+ * | 双击程序目录里的 exe | 程序目录 | ✅ 数据在程序旁 |
+ * | 快捷方式（起始位置为空） | 程序目录 | ✅ |
+ * | 从别的目录拉起（脚本 / 某些启动器） | **那个目录** | ❌ **数据跑到别处，看起来「库空了」** |
+ * | 旧版单文件 portable | `%TEMP%\<随机名>` | ❌ **退出时连同目录被清空** |
+ *
+ * 本项目 v1.0.0 尚未发布、没有任何已安装用户，因此这里把约定改成
+ * **「打包后 = exe 所在目录」**，四种情况一次性都正确，且没有迁移成本。
+ *
+ * ## 规则
  *
  * ```
- * C:\Users\<用户>\AppData\Local\Temp\3JdjlRNpbOcKB8YMQBZlp7c6K6f\SaveData\database.db
+ * packagedRoot = 打包后 → path.dirname(app.getPath('exe'))；开发版 → null
+ * 资源根 = packagedRoot ?? 启动时 cwd     // configs/、disguise/ 等随包资源
+ * 数据根 = PORTABLE_EXECUTABLE_DIR ?? packagedRoot ?? 启动时 cwd   // SaveData 等用户数据
  * ```
  *
- * 便携版退出时这个目录会被清理 ⇒ **整个游戏库随临时目录一起消失**。
- * 而 `SaveData` 的位置完全由 `process.cwd()` 决定（`database/sqlite.js`、渲染层传来的
- * 相对路径也都按 cwd 解析），散落着十几处，逐处改既脆弱又容易漏。
- *
- * ## 做法
- *
- * electron-builder 给便携版注入了两个环境变量：
- * - `PORTABLE_EXECUTABLE_DIR`  = 便携 exe **所在目录**（用户放 .exe 的地方）
- * - `PORTABLE_EXECUTABLE_FILE` = 便携 exe 的完整路径
- *
- * 于是：
- * - **数据根** = `PORTABLE_EXECUTABLE_DIR`（有就用），否则 `process.cwd()`
- *   → 便携版的 SaveData 落在 .exe 旁边，持久；开发版 / 安装版与原来完全一致。
- * - **资源根** = 启动时的原始 `process.cwd()`
- *   → `configs/`、`disguise/` 这些**随包分发**的资源仍在解包目录里，不能被切走。
+ * - **开发版**：两者都等于 cwd（仓库根），行为与改动前完全一致
+ * - **安装版 / 绿色包**：两者都等于 exe 所在目录 ⇒ 从哪拉起都不影响
+ * - **单文件 portable**（现已不再作为发行目标，逻辑保留作防御）：
+ *   资源根 = `%TEMP%` 解包目录，数据根 = 便携 exe 所在目录
  *
  * 启动时把进程 cwd 切到数据根（`applyDataRootAsCwd()`），这样**所有**依赖
- * `process.cwd()` 的数据路径（含渲染层传过来的相对路径）一次性统一，无需逐处修改。
+ * `process.cwd()` 的数据路径（含渲染层传来的相对路径）一次性统一，无需逐处修改。
+ *
+ * 用户的 `settings.saveDataLocation === 'custom'` + `saveDataPath` 仍然优先，
+ * 不受本模块影响（见 `database/sqlite.js`）。
  */
 
 const path = require('path')
@@ -38,8 +44,29 @@ const fs = require('fs')
 const launchCwd = process.cwd()
 const portableDir = (process.env.PORTABLE_EXECUTABLE_DIR || '').trim()
 
-const dataRoot = portableDir || launchCwd
-const resourcesRoot = launchCwd
+/**
+ * 打包后应用所在目录（exe 旁边）。
+ * 开发版返回 null —— 让开发时的行为保持「仓库根」不变。
+ * @returns {string|null}
+ */
+function resolvePackagedRoot() {
+  try {
+    // 注意：非 Electron 环境（单测 / 探针脚本）下 require('electron') 返回的是
+    // 二进制路径字符串，没有 app，靠下面的判断自然落空。
+    const electron = require('electron')
+    const app = electron && electron.app
+    if (app && app.isPackaged) {
+      return path.dirname(app.getPath('exe'))
+    }
+  } catch (e) {
+    // 忽略：非 Electron 运行时
+  }
+  return null
+}
+
+const packagedRoot = resolvePackagedRoot()
+const resourcesRoot = packagedRoot || launchCwd
+const dataRoot = portableDir || packagedRoot || launchCwd
 
 /**
  * 数据根目录：SaveData、数据库、截图、封面等**用户数据**都落在这里。
@@ -58,22 +85,26 @@ function getResourcesRoot() {
 }
 
 /**
- * 是否为便携版（单文件）模式
+ * 数据根是否与启动 cwd 不同（即是否需要 chdir）
  * @returns {boolean}
  */
-function isPortable() {
-  return dataRoot !== resourcesRoot
+function needsChdir() {
+  return path.resolve(dataRoot) !== path.resolve(launchCwd)
 }
 
 /**
- * 把进程 cwd 切到数据根。开发版 / 安装版下二者相同，此函数是空操作。
+ * 把进程 cwd 切到数据根。
+ * 开发版（未打包、且非便携版）下是空操作。
  */
 function applyDataRootAsCwd() {
-  if (dataRoot === launchCwd) return
+  if (!needsChdir()) return
   try {
     fs.mkdirSync(dataRoot, { recursive: true })
     process.chdir(dataRoot)
-    console.log(`[AppRoot] 便携版模式：数据根 ${dataRoot}（资源根仍为 ${resourcesRoot}）`)
+    console.log(
+      `[AppRoot] 数据根 = ${dataRoot}` +
+        (resourcesRoot === dataRoot ? '' : `（资源根仍为 ${resourcesRoot}）`)
+    )
   } catch (error) {
     console.error('[AppRoot] 切换数据根目录失败，回退到原 cwd:', error)
   }
@@ -101,7 +132,7 @@ function resolveResourcePath(p) {
 module.exports = {
   getDataRoot,
   getResourcesRoot,
-  isPortable,
+  needsChdir,
   applyDataRootAsCwd,
   resolveResourcePath
 }

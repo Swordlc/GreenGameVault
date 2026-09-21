@@ -13,13 +13,22 @@
 由 `electron/database/sqlite.js` 的 `getSaveDataDirectory()` 决定，**基于 `process.cwd()`**，
 并支持 `settings.saveDataLocation === 'custom'` + `settings.saveDataPath` 重定向。
 
-> **⚠️ 便携版例外（2026-09-22 加入）**：单文件 portable 会把 App 解包到 `%TEMP%` 再运行，
-> 此时 `process.cwd()` 指向临时目录，`SaveData` 会随解包目录被清掉。
-> 因此启动时会先走 `electron/utils/app-root.js`：若存在 `PORTABLE_EXECUTABLE_DIR`，
-> 就把 cwd 切到便携 exe 所在目录（**数据根**），同时把原始 cwd 记为**资源根**
-> 供 `configs/`、`disguise/` 使用。
-> **开发版 / 安装版下两者相同，此逻辑是空操作 —— 上面的规则不受影响。**
-> 新增「随包分发资源」的路径解析时，请用 `resolveResourcePath()` 而不是裸的相对路径。
+> **⚠️ 修订（2026-09-22，v1.0.0 发布前）**：上游的「数据目录 = `process.cwd()`」很脆 ——
+> 实测从别的 cwd 拉起 exe，`SaveData` 会跑到那个 cwd，用户看到的是「库空了」；
+> 旧版单文件 portable 更糟（`%TEMP%` 解包目录，退出即被清空）。
+> 本项目 v1.0.0 尚无已安装用户，**零迁移成本**，故改为：
+>
+> ```
+> 打包后（安装版 / 绿色包）→ 资源根 = 数据根 = exe 所在目录
+> 开发版（未打包）        → 资源根 = 数据根 = 启动 cwd（仓库根，行为不变）
+> 单文件 portable（防御） → 资源根 = %TEMP% 解包目录，数据根 = 便携 exe 所在目录
+> ```
+>
+> 实现在 `electron/utils/app-root.js`，启动时 `process.chdir(数据根)`，
+> 因此**所有** `process.cwd()` 数据路径（含渲染层传来的相对路径）一次性统一。
+> **新增「随包分发资源」（`configs/`、`disguise/`）的路径解析时，请用
+> `resolveResourcePath()` / `getResourcesRoot()`，不要写裸相对路径。**
+> 用户的 `settings.saveDataLocation === 'custom'` 优先级高于以上全部规则。
 
 真实存档目录内容：
 
