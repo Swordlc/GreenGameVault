@@ -1,0 +1,25 @@
+// 响应式设计工具类
+@media (max-width: 768px) {
+  .sidebar {
+    width: 100%;
+    position: relative;
+    height: auto;
+  }
+
+  .main-content {
+    margin-left: 0;
+  }
+
+  .content-header {
+    padding: var(--spacing-xl);
+
+    h2 {
+      font-size: 1.5rem;
+    }
+  }
+
+  .global-audio-player {
+    left: 0;
+  }
+}
+

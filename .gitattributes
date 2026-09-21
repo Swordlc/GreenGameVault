@@ -1,0 +1,32 @@
+# 统一换行符：仓库内一律 LF，避免 Windows/Linux 来回 checkout 产生整文件 diff
+* text=auto eol=lf
+
+# 文本文件
+*.js    text
+*.cjs   text
+*.mjs   text
+*.ts    text
+*.vue   text
+*.json  text
+*.md    text
+*.scss  text
+*.css   text
+*.html  text
+*.yml   text
+*.yaml  text
+
+# 二进制文件（不要做任何换行符/编码转换）
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.mp3   binary
+*.db    binary
+*.7z    binary
+*.exe   binary
+
+# 打包产物、字体等
+*.woff  binary
+*.woff2 binary

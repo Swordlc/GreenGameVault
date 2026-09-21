@@ -1,0 +1,29 @@
+// 拖拽区域样式 - 可复用
+.drag-overlay {
+  position: relative;
+  transition: all var(--transition-slow);
+
+  &.drag-over {
+    background: rgba(59, 130, 246, 0.1);
+    border: 2px dashed var(--accent-color);
+    border-radius: var(--radius-xl);
+
+    &::before {
+      content: '拖拽文件或文件夹到这里添加（支持多选）';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: var(--accent-color);
+      color: white;
+      padding: var(--spacing-xl) var(--spacing-3xl);
+      border-radius: var(--radius-xl);
+      font-size: var(--font-size-lg);
+      font-weight: 600;
+      z-index: var(--z-modal);
+      box-shadow: 0 8px 25px var(--shadow-dark);
+      pointer-events: none;
+    }
+  }
+}
+

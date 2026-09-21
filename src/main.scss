@@ -1,0 +1,25 @@
+// 样式系统入口文件
+// 按顺序导入，确保层叠顺序正确
+
+// 1. 基础层 - 变量和重置
+@import './styles/base/variables.css';
+@import './styles/base/reset';
+
+// 2. 布局层 - 页面布局样式
+@import './styles/layout/sidebar';
+@import './styles/layout/main-content';
+
+// 3. 组件层 - 可复用组件样式
+@import './styles/components/modal';
+@import './styles/components/button';
+@import './styles/components/form';
+@import './styles/components/card';
+@import './styles/components/grid';
+@import './styles/components/drag-drop';
+@import './styles/components/audio-player';
+
+// 4. 工具类层 - 实用工具
+@import './styles/utilities/spacing';
+@import './styles/utilities/layout';
+@import './styles/utilities/responsive';
+

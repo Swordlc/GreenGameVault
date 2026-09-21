@@ -1,0 +1,54 @@
+# NOTICE — 来源、署名与授权
+
+## 本项目的性质
+
+**GreenGameVault 是 [GreenResourcesManager](https://github.com/klsdf/GreenResourcesManager)
+的精简衍生作品（derivative work），不是从零开始的原创项目。**
+
+它通过「保留一部分、删除其余」的方式从上游源码改造而来。**被保留**的代码与设计包括
+（但不限于）：
+
+- Electron 主进程 / 预加载 / 渲染进程三段式架构与 IPC 组织方式
+- `src/fun-ui/` 界面组件库（上游作者的项目）
+- 「文档式」SQLite 数据层：`games(id, jsonData, timestamp, version)`，业务字段全部放在 `jsonData` 内
+- `ResourceField` / `FormField` 字段描述体系与配置驱动的页面系统
+- 游戏截图链路（全局快捷键截图 → 按 `<游戏ID>_<游戏名>` 归档）
+- 游戏启动与运行状态追踪链路
+- `SaveData/` 目录布局与封面解析规则
+
+**被删除**的部分包括：8 个其它资源类型的页面、游戏化系统（桌宠/成就）、资源刮削库、
+内置播放器与阅读器、插件与创意工坊等。
+
+## 上游信息
+
+| 项 | 值 |
+| --- | --- |
+| 项目 | GreenResourcesManager |
+| 仓库 | <https://github.com/klsdf/GreenResourcesManager> |
+| 作者 | YanChenXiang（GitHub: [@klsdf](https://github.com/klsdf)） |
+| 授权 | PolyForm Noncommercial License 1.0.0 |
+| 版权 | Copyright (c) 2024 YanChenXiang |
+
+上游项目已停止维护，本项目在其基础上做功能删减与缺陷修复。
+
+## 授权继承
+
+依据 PolyForm Noncommercial License 1.0.0，本项目**完整继承上游的非商业限制**：
+
+- ✅ 允许：个人使用、修改、再分发（须保留授权与署名）
+- ❌ 禁止：任何商业用途（包括但不限于售卖、随商业产品分发、以之为付费服务的基础）
+
+本项目的授权全文见 [LICENSE](./LICENSE)，该文件在保留上游原始版权声明的前提下，
+补充了衍生作品的版权声明。
+
+## 关于 `disguise/` 目录
+
+上游的 `disguise/` 目录内附带若干伪装用壁纸图片（本仓库**未收录**，仅保留
+`disguise.txt` 说明文件）。那些图片并非上游作者的原创素材，来源与授权不明，
+因此不适合随开源仓库分发。程序内加载伪装的逻辑完整保留，使用者可自行放入图片。
+
+## 第三方依赖
+
+本项目使用 Node.js / Electron / Vue 生态的众多开源包，各自的授权条款见
+`node_modules/<包名>/LICENSE`。发行版中 Electron 与 Chromium 的授权文本随包分发于
+`LICENSE.electron.txt` 与 `LICENSES.chromium.html`。

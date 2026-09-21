@@ -1,0 +1,56 @@
+// 全局音频播放器样式
+.global-audio-player {
+  position: fixed;
+  bottom: 0;
+  left: 280px;
+  right: 0;
+  background: rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-top: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: 0 -2px 20px rgba(0, 0, 0, 0.1);
+  z-index: var(--z-fixed);
+  transition: all var(--transition-slow) ease;
+}
+
+// 主题变体
+[data-theme="dark"] .global-audio-player {
+  background: rgba(42, 71, 94, 0.3);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 -2px 20px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme="ukiyoe"] .global-audio-player {
+  background: rgba(255, 248, 240, 0.2);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-top: 1px solid rgba(211, 47, 47, 0.3);
+  box-shadow: 0 -2px 20px rgba(211, 47, 47, 0.2);
+}
+
+[data-theme="chinese"] .global-audio-player {
+  background: rgba(231, 226, 220, 0.2);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-top: 1px solid rgba(198, 73, 58, 0.3);
+  box-shadow: 0 -2px 20px rgba(198, 73, 58, 0.2);
+}
+
+[data-theme="forest"] .global-audio-player {
+  background: rgba(232, 245, 232, 0.2);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-top: 1px solid rgba(76, 175, 80, 0.3);
+  box-shadow: 0 -2px 20px rgba(76, 175, 80, 0.2);
+}
+
+[data-theme="ocean"] .global-audio-player {
+  background: rgba(225, 245, 254, 0.2);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-top: 1px solid rgba(33, 150, 243, 0.3);
+  box-shadow: 0 -2px 20px rgba(33, 150, 243, 0.2);
+}
+

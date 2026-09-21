@@ -1,0 +1,107 @@
+{
+  "name": "green-game-vault",
+  "version": "1.0.0",
+  "description": "GreenGameVault —— 轻量本地游戏库管理器，支持标签管理与游戏内截图",
+  "main": "electron/main.js",
+  "homepage": "./",
+  "scripts": {
+    "dev": "vite",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "build": "vite build",
+    "electron-dev": "concurrently \"npm run dev\" \"wait-on http://localhost:5173 && electron .\"",
+    "electron-build": "npm run build && electron-builder --win"
+  },
+  "keywords": [
+    "game",
+    "library",
+    "manager",
+    "electron",
+    "vue"
+  ],
+  "author": "",
+  "devDependencies": {
+    "@types/node": "^24.8.0",
+    "@vitejs/plugin-vue": "^4.5.0",
+    "@vue/test-utils": "^2.4.6",
+    "@vue/tsconfig": "^0.8.1",
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "electron": "^29.0.0",
+    "electron-builder": "^24.6.4",
+    "happy-dom": "^20.4.0",
+    "sass": "^1.97.1",
+    "typescript": "^5.9.3",
+    "vite": "^5.0.0",
+    "vitest": "^4.0.18",
+    "wait-on": "^7.2.0"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "better-sqlite3": "^12.6.2",
+    "pinia": "^3.0.4",
+    "vue": "^3.3.8",
+    "vue-i18n": "^9.14.5",
+    "vue-router": "^4.6.4"
+  },
+  "build": {
+    "appId": "com.greengamevault.app",
+    "productName": "GreenGameVault",
+    "directories": {
+      "output": "dist-electron/v${version}",
+      "buildResources": "build"
+    },
+    "artifactName": "${productName} ${version}.${ext}",
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "public/butter-icon.ico",
+      "public/butter-icon.png",
+      "public/hide-icon.png",
+      "public/unlock.mp3",
+      "public/camera.mp3",
+      "public/default-game.png",
+      "public/icon/**/*",
+      "node_modules/**/*"
+    ],
+    "extraFiles": [
+      {
+        "from": "disguise",
+        "to": "disguise"
+      },
+      {
+        "from": "configs",
+        "to": "configs"
+      }
+    ],
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "artifactName": "${productName}_Setup_${version}.${ext}",
+      "useZip": true,
+      "warningsAsErrors": false
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "public/butter-icon.ico"
+    },
+    "portable": {
+      "artifactName": "${productName}_Portable_${version}.${ext}"
+    }
+  }
+}
