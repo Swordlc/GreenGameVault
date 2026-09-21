@@ -31,6 +31,18 @@
 
 上游项目已停止维护，本项目在其基础上做功能删减与缺陷修复。
 
+## 版权归属
+
+```
+Copyright (c) 2024 YanChenXiang  — 原始作品 GreenResourcesManager
+Copyright (c) 2026 Swordlc       — 衍生作品 GreenGameVault
+```
+
+> `LICENSE` 内保留的是 **PolyForm Noncommercial License 1.0.0 的逐字原文**
+> （含上游原始版权行，未作任何改动）—— 因为 GitHub/SPDX 的许可证识别依赖精确文本匹配，
+> 在授权正文里加注释会导致识别失败、被标记为 "Other"。
+> 因此本项目的版权声明与派生说明一律放在本文件（NOTICE）中。
+
 ## 授权继承
 
 依据 PolyForm Noncommercial License 1.0.0，本项目**完整继承上游的非商业限制**：
