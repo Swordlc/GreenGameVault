@@ -18,7 +18,7 @@
     <div class="resource-info">
       <h3 class="resource-title">{{ resource.name }}</h3>
       <p class="resource-category">{{ resource.category || getDefaultCategory() }}</p>
-      <p class="resource-status">{{ getStatusText() }}</p>
+      <p class="resource-status">{{ statusText || getStatusText() }}</p>
     </div>
   </div>
 </template>
@@ -48,6 +48,11 @@ export default {
     resource: {
       type: Object as () => UnifiedResource,
       required: true
+    },
+    /** 覆盖默认状态行（主页各条链路用来显示各自的推荐理由） */
+    statusText: {
+      type: String,
+      default: ''
     }
   },
   emits: ['click'],

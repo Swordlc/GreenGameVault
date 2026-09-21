@@ -8,6 +8,11 @@ export interface PageConfig {
 	description?: string
 	settingsKey: string
 	defaultPageSize: number
+	/**
+	 * 进入本页时的默认排序方式，取值必须是 sortOptions 里某个 id。
+	 * 不填则回落到 'name-asc'（按名称升序）。
+	 */
+	defaultSortBy?: string
 	resourceTypes: string[]
 	displayLayoutConfig: {
 		minWidth: number

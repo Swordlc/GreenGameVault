@@ -211,6 +211,7 @@
 
 <script lang="ts">
 import { defineComponent, ref, computed, onMounted, onBeforeUnmount, watch, toRefs } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import BaseView from './BaseView.vue'
 import MediaCard from './MediaCard.vue'
 import DetailPanel from './DetailPanel.vue'
@@ -284,6 +285,10 @@ export default defineComponent({
     }
   },
   setup(props, { emit }) {
+    // 主页「抓阄链路」点卡片跳过来时会带 ?gameId=xxx，需要读/清当前路由
+    const route = useRoute()
+    const router = useRouter()
+
     // 从 pageConfig 或 resourceType prop 获取资源类型
     const resourceType = computed(() => {
       return props.pageConfig?.type || props.resourceType || 'Game'
@@ -348,7 +353,8 @@ export default defineComponent({
     const items = ref<any[]>([])
     const isElectronEnvironment = ref(!!(typeof window !== 'undefined' && (window as any).electronAPI))
     const searchQuery = ref('')
-    const sortBy = ref('name-asc')
+    // 排序方式：每次进入页面都回到页面配置里的 defaultSortBy（游戏页＝最近游玩，正在玩的排最前）
+    const sortBy = ref(pageConfig.value?.defaultSortBy || 'name-asc')
     
     // 多选模式相关
     const isMultiSelectMode = ref(false)
@@ -1894,6 +1900,40 @@ export default defineComponent({
       }
     }
 
+    /**
+     * 主页「抓阄链路」点卡片跳过来时带着 ?gameId=xxx：
+     * 数据加载完成后自动打开这款游戏的详情面板，并立刻把 query 清掉，
+     * 免得刷新/返回时又弹一次。找不到就只清 query，不打扰用户。
+     */
+    function openGameFromQuery() {
+      const queryGameId = route.query?.gameId
+      if (typeof queryGameId !== 'string' || !queryGameId) return
+
+      const target = items.value.find((item: any) => {
+        const raw = item?.id
+        return String(raw && typeof raw === 'object' && 'value' in raw ? raw.value : raw ?? '') === queryGameId
+      })
+
+      if (target) {
+        console.log(`[GenericResourceView] 按链接参数打开详情: gameId=${queryGameId}`)
+        resourcePage.showDetail(target)
+      } else {
+        console.warn(`[GenericResourceView] 链接参数 gameId=${queryGameId} 不在本页数据中，已忽略`)
+      }
+
+      const restQuery = { ...route.query }
+      delete restQuery.gameId
+      router.replace({ path: route.path, query: restQuery }).catch(() => {})
+    }
+
+    // 已经停留在本页时 query 变化（例如从主页再次点进来）也要响应
+    watch(
+      () => route.query.gameId,
+      () => {
+        openGameFromQuery()
+      }
+    )
+
     // 监听游戏进程结束事件
     onMounted(async () => {
       // 1. 加载页面数据（仅从数据库读取）
@@ -1943,7 +1983,10 @@ export default defineComponent({
       } finally {
         isLoadingData.value = false
       }
-      
+
+      // 2.5 主页抓阄链路跳过来（?gameId=xxx）时，自动打开对应游戏的详情面板
+      openGameFromQuery()
+
       // 3. 加载分页设置
       console.log('[GenericResourceView] 准备加载分页设置', {
         pageId,

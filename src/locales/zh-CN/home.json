@@ -1,8 +1,38 @@
 {
-  "recommended": "为您推荐",
-  "refreshBatch": "再来一批！",
-  "noRecommendations": "暂无推荐资源",
-  "recentBrowsing": "最近浏览",
-  "viewAll": "查看全部",
-  "noRecentBrowsing": "暂无最近浏览记录"
+  "loading": "正在整理你的游戏库…",
+  "librarySummary": "共 {total} 款游戏，当前筛选出 {filtered} 款",
+  "emptyLibrary": "游戏库还是空的，先去「游戏」页添加几款吧",
+  "filteredEmptyTitle": "当前标签筛选下没有游戏",
+  "filteredEmptyHint": "试试放宽筛选条件，或者直接清空筛选",
+  "gameCategory": "游戏",
+
+  "reroll": "重新推荐",
+  "rerollTitle": "只重刷这一行的随机位（前 3 名固定不变）",
+
+  "chainMostPlayed": "最常游玩",
+  "chainMostPlayedHint": "按游戏时长 0.7 + 启动次数 0.3 排；前 3 名固定，其余按权重抽签",
+  "chainRecent": "最近游玩",
+  "chainRecentHint": "按最后游玩时间排；前 3 名固定，其余按权重抽签",
+  "chainUpNext": "接下来游玩",
+  "chainUpNextHint": "按空置天数排（没玩过的从入库日算起）；前 3 名固定，其余按权重抽签",
+
+  "rowEmptyMostPlayed": "还没有玩过的游戏，先启动几款再来抓阄吧",
+  "rowEmptyRecent": "还没有游玩记录",
+  "rowEmptyUpNext": "暂时没有可以推荐的游戏",
+
+  "captionMostPlayed": "{time} · {count} 次",
+  "captionRecent": "最后游玩 {time}",
+  "captionNever": "从未游玩",
+  "captionToday": "今天玩过",
+  "captionDaysAgo": "{days} 天前玩过",
+  "captionIdle": "{days} 天没碰了",
+  "captionNeverPlayed": "入库 {days} 天 · 一次没开过",
+
+  "tagFilterTitle": "标签筛选",
+  "tagSearchPlaceholder": "搜索标签…",
+  "tagClearAll": "清空筛选",
+  "tagChipRemove": "点击移除这条筛选",
+  "tagCycleTip": "点击标签：包含 → 排除 → 取消（包含需全部命中，排除命中任一即淘汰）",
+  "tagEmptyLibrary": "库里还没有任何标签",
+  "tagEmptySearch": "没有匹配的标签"
 }
