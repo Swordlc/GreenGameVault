@@ -312,6 +312,8 @@ import { useVideoLibrary } from '../composables/video/useVideoLibrary'
 // 视频页：文件夹在标签筛选/搜索下的可见性（纯函数）
 import { filterVisibleFolders } from '../utils/videoFolderFilter'
 import { collectSearchTexts, matchesFuzzy } from '../utils/fuzzySearch'
+// 编辑对话框按字段名取候选，这里把「筛选器 key → 字段名」的映射补齐
+import { buildTagsByField } from '../utils/filterFieldMap'
 // 以下两个 image composable 服务于【游戏详情页的截图浏览】，不是图片资源类型遗留，请勿删除
 import { useImagePages } from '../composables/image/useImagePages'
 import { useImageCache } from '../composables/image/useImageCache'
@@ -1096,16 +1098,18 @@ export default defineComponent({
       return tagsState?.items?.value || []
     })
 
-    // 按字段 key 提供各自的候选列表（开发商用 developers 数据，标签用 tags 数据）
+    // 按字段 key 提供各自的候选列表（作者用 author 数据，标签用 tags 数据）
+    // ⚠️ 编辑对话框是按**资源字段名**取的（author / tags），而筛选器的 key 可能是
+    //    authors / extensions —— buildTagsByField 会把两套键都补齐，
+    //    否则取不到候选时会退化成"拿标签列表兜底"，作者栏里就会冒出标签。
     const availableTagsByField = computed<Record<string, FilterItem[]>>(() => {
-      const states = filterComposable.filterStates
-      if (!states || typeof states !== 'object') return {}
-      const map: Record<string, FilterItem[]> = {}
+      const states = (filterComposable.filterStates || {}) as Record<string, any>
+      const itemsByFilterKey: Record<string, FilterItem[]> = {}
       for (const key of Object.keys(states)) {
-        const items = (states as any)[key]?.items?.value
-        map[key] = Array.isArray(items) ? items : []
+        const items = states[key]?.items?.value
+        itemsByFilterKey[key] = Array.isArray(items) ? items : []
       }
-      return map
+      return buildTagsByField(pageConfig.value?.filterConfig || [], itemsByFilterKey) as Record<string, FilterItem[]>
     })
 
     /** 重新提取筛选器数据并推给左侧栏（视频库扫描/切换目录后必须刷新，否则左栏是旧数据） */

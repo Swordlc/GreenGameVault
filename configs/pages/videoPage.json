@@ -154,7 +154,7 @@
       "isArray": true
     },
     {
-      "key": "authors",
+      "key": "author",
       "title": "作者筛选",
       "filterType": "resourceField",
       "params": {
