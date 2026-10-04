@@ -5,6 +5,7 @@
       :items="items" 
       :filtered-items="filteredItems" 
       :empty-state-config="emptyStateConfig"
+      :empty-state-override="emptyStateOverride"
       :toolbar-config="toolbarConfig" 
       :context-menu-items="contextMenuItems"
       :pagination-config="paginationConfig" 
@@ -34,9 +35,45 @@
       @dragenter="handleDragEnter"
       @dragleave="handleDragLeave"
     >
+      <!-- ===== 视频页专属：面包屑 + 绑定目录状态 ===== -->
+      <div v-if="isVideoPage" class="video-path-bar">
+        <div class="video-breadcrumb">
+          <span class="video-crumb-home">🗂️</span>
+          <template v-for="(crumb, index) in videoBreadcrumb" :key="`${crumb.root || 'all'}|${crumb.rel}`">
+            <span
+              class="video-crumb"
+              :class="{ 'is-current': index === videoBreadcrumb.length - 1 }"
+              :title="crumb.label"
+              @click="handleBreadcrumbClick(crumb)"
+            >{{ crumb.label }}</span>
+            <span v-if="index < videoBreadcrumb.length - 1" class="video-crumb-sep">›</span>
+          </template>
+        </div>
+        <div class="video-path-actions">
+          <span v-if="videoIsScanning" class="video-status is-scanning">扫描中…</span>
+          <span v-else-if="videoHasRoots && !videoWatcherHealthy" class="video-status is-warn" title="目录监听不可用，请用「重新扫描」手动刷新">
+            实时更新不可用
+          </span>
+          <span
+            v-else-if="videoHasRoots && !videoFfmpegAvailable"
+            class="video-status is-hint"
+            title="没有检测到 ffmpeg：抽帧封面将回退到浏览器解码，MKV/HEVC 等格式可能失败"
+          >未检测到 FFmpeg</span>
+          <button
+            v-if="videoHasRoots"
+            class="video-mini-btn"
+            :class="{ 'is-off': !showFolderCards }"
+            :title="showFolderCards ? '当前会显示文件夹卡片，点击隐藏' : '当前隐藏了文件夹卡片，点击显示'"
+            @click="toggleShowFolderCards"
+          >{{ showFolderCards ? '📁 文件夹' : '📁 文件夹（已隐藏）' }}</button>
+          <button v-if="videoBreadcrumb.length > 1" class="video-mini-btn" @click="handleGoUp">⬆ 上一级</button>
+          <button class="video-mini-btn" @click="handleRescanVideoLibrary">🔄 重新扫描</button>
+        </div>
+      </div>
+
       <!-- 使用 FunGrid 组件进行布局 -->
       <FunGrid
-        v-if="paginatedItems.length > 0"
+        v-if="paginatedItems.length > 0 || (isVideoPage && visibleFolderCards.length > 0)"
         mode="auto-fill"
         :scale="scale"
         :baseWidth="displayLayoutBaseWidth"
@@ -48,6 +85,37 @@
         :customStyle="customLayoutStyle"
         :class="{ 'is-dragging': isDragOver }"
       >
+        <!-- 文件夹卡片（视频页专属：单击进入子层级；标签并集用于筛选下的可见性） -->
+        <div
+          v-for="folder in (isVideoPage ? visibleFolderCards : [])"
+          :key="folder.key"
+          class="video-folder-card"
+          :class="{ 'is-root': folder.kind === 'root' }"
+          :title="folder.tags && folder.tags.length > 0 ? `${folder.fullPath}\n标签：${folder.tags.join('、')}` : folder.fullPath"
+          @click="handleFolderClick(folder)"
+        >
+          <button
+            v-if="folder.kind === 'root'"
+            class="folder-unbind"
+            title="解除绑定（不会删除记录与标签）"
+            @click.stop="handleUnbindRoot(folder)"
+          >✕</button>
+          <div class="folder-icon">{{ folder.kind === 'root' ? '📂' : '📁' }}</div>
+          <div class="folder-name">{{ folder.name }}</div>
+          <div v-if="folder.tags && folder.tags.length > 0" class="folder-tags">
+            <span v-for="tag in folder.tags.slice(0, 3)" :key="tag" class="folder-tag">{{ tag }}</span>
+            <span v-if="folder.tags.length > 3" class="folder-tag-more">+{{ folder.tags.length - 3 }}</span>
+          </div>
+          <div class="folder-meta">
+            <span>{{ folder.count }} 个视频</span>
+            <button
+              class="folder-open"
+              title="在资源管理器中打开"
+              @click.stop="handleOpenFolderInExplorer(folder)"
+            >↗</button>
+          </div>
+        </div>
+
         <MediaCard
           v-for="item in paginatedItems"
           :key="item.id?.value || item.id"
@@ -61,7 +129,7 @@
           :is-selected="isItemSelected(item)"
           @click="() => (this as any).showDetail(item)"
           @contextmenu.prevent="handleContextMenu($event, item)"
-          @action="handleResourceAction"
+          @action="handleCardAction"
           @toggle-select="() => toggleSelectItem(item)"
         />
       </FunGrid>
@@ -224,8 +292,9 @@ import BatchDeleteConfirmDialog from './BatchDeleteConfirmDialog.vue'
 import { createResourcePage } from '../composables/createResourcePage'
 import FunGrid from '../fun-ui/layout/Grid/FunGrid.vue'
 import { useDragAndDrop } from '../composables/useDragAndDrop'
-// 资源类导入（仅保留游戏类型）
+// 资源类导入（游戏 + 视频）
 import { Game } from '@resources/game.ts'
+import { Video } from '@resources/video.ts'
 import { pageConfigLoader, type PageConfig } from '../configs/pages/PageConfigLoader.ts'
 import { executeActionHandler, getActionHandler, type ActionHandlerContext } from '../utils/ResourceActionHandlers'
 import { useGameRunningStore } from '../stores/game-running'
@@ -238,6 +307,11 @@ import saveManager from '../utils/SaveManager.ts'
 import { calculateAndUpdateResourceSize, calculateResourceSizesBatch } from '../utils/ResourceSizeService.ts'
 import { getGameScreenshotFolderPath, useGameScreenshot } from '../composables/game/useGameScreenshot'
 import { useResourceFilter } from '../composables/useResourceFilter'
+// 视频页专用：绑定文件夹 / 递归扫描同步 / 层级浏览 / 实时监听 / 打开次数 / 抽帧封面
+import { useVideoLibrary } from '../composables/video/useVideoLibrary'
+// 视频页：文件夹在标签筛选/搜索下的可见性（纯函数）
+import { filterVisibleFolders } from '../utils/videoFolderFilter'
+import { collectSearchTexts, matchesFuzzy } from '../utils/fuzzySearch'
 // 以下两个 image composable 服务于【游戏详情页的截图浏览】，不是图片资源类型遗留，请勿删除
 import { useImagePages } from '../composables/image/useImagePages'
 import { useImageCache } from '../composables/image/useImageCache'
@@ -245,10 +319,13 @@ import ResourcesEditDialog from './ResourcesEditDialog.vue'
 import type { FilterItem } from '../types/filter'
 import coverManager from '../utils/CoverManager.ts'
 
-// 资源类型到资源类的映射（GreenGameVault 仅保留游戏类型）
+// 资源类型到资源类的映射（GreenGameVault：游戏 + 视频）
 const resourceClassMap: Record<string, { resourceClass: any }> = {
   Game: {
     resourceClass: Game
+  },
+  Video: {
+    resourceClass: Video
   }
 }
 
@@ -315,10 +392,18 @@ export default defineComponent({
 
     const ResourceClass = resourceConfig.resourceClass
 
-    // 资源类型到页面配置 ID 的映射（GreenGameVault 仅保留游戏类型）
+    // 资源类型到页面配置 ID 的映射（GreenGameVault：游戏 + 视频）
     const resourceTypeToPageIdMap: Record<string, string> = {
-      Game: 'games'
+      Game: 'games',
+      Video: 'videos'
     }
+
+    // 是否视频页（视频页复用本组件，但有一批「只读标签管理」专属行为）
+    const isVideoPage = computed(() => resourceType.value === 'Video')
+
+    /** 路径归一化（Windows 大小写不敏感 + 反斜杠统一） */
+    const pathKeyOf = (input: unknown): string =>
+      String(input ?? '').replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase()
 
     // 获取页面配置（从 JSON 配置加载器）
     const pageConfig = computed(() => {
@@ -587,9 +672,10 @@ export default defineComponent({
     }
     
     // 使用拖拽 composable（直接使用，避免 FunDropZone 组件的性能问题）
+    // 视频页是只读的：资源由绑定文件夹扫描得到，拖拽入库无意义，直接关掉
     const { isDragOver, handleDragOver, handleDragEnter, handleDragLeave, handleDrop: handleDragDrop } = useDragAndDrop({
       acceptedExtensions: [],
-      enabled: true,
+      enabled: !isVideoPage.value,
       onDrop: handleFileDrop
     })
     
@@ -947,6 +1033,14 @@ export default defineComponent({
 
     const contextMenuItems = computed(() => {
       if (isMultiSelectMode.value) {
+        // 视频页是「只读标签管理」：批量菜单里**绝不能**出现「批量删除文件」
+        if (isVideoPage.value) {
+          return [
+            { key: 'batchAddTag', icon: '🏷️', label: '批量增加tag' },
+            { key: 'batchDeleteTag', icon: '🏷️', label: '批量删除tag' },
+            { key: 'batchGrabCover', icon: '🎬', label: '批量抽帧设为封面' }
+          ]
+        }
         return [
           { key: 'batchAddTag', icon: '🏷️', label: '批量增加tag' },
           { key: 'batchDeleteTag', icon: '🏷️', label: '批量删除tag' },
@@ -957,14 +1051,43 @@ export default defineComponent({
       }
     })
 
-    
+    /**
+     * 视频库（绑定文件夹 / 扫描同步 / 层级 / 实时监听 / 打开次数 / 抽帧封面）
+     * 非视频页时内部的 enabled 为 false，所有能力空转，不影响游戏页。
+     */
+    const videoLib = useVideoLibrary({
+      enabled: isVideoPage.value,
+      items,
+      resourceClass: ResourceClass,
+      isElectronEnvironment,
+      save: async () => {
+        try {
+          return await saveData()
+        } catch (error) {
+          console.error('[GenericResourceView] 视频库保存失败:', error)
+          return false
+        }
+      }
+    })
+
+    // 视频页：筛选/排序/分页只作用于「当前层」的视频；其它页面照旧用全量
+    const itemsForFilter = isVideoPage.value ? videoLib.scopedItems : items
+
     // 使用通用筛选 composable（传入页面配置 ID 和额外数据）
     const filterComposable = useResourceFilter(
-      items, 
+      itemsForFilter,
       searchQuery, 
       sortBy, 
       pageConfig.value?.id || '',
-      { isGameRunning: isGameRunningForFilter }
+      {
+        isGameRunning: isGameRunningForFilter,
+        // 视频页：文件管理器式模糊搜索 —— 文件名/相对路径/作者/标签/简介都能搜，
+        // 支持空格分词（「第二 改名」）与忽略下划线（「第二部改名」）。
+        // 字段清单来自 Video.searchFields（文件夹可见性判定用的是同一份，避免两处不一致）。
+        searchFields: isVideoPage.value
+          ? [...(ResourceClass?.searchFields || ['name'])]
+          : []
+      }
     )
     
     // 从筛选器状态中获取所有标签（用于编辑对话框，兼容单一口径）
@@ -984,6 +1107,27 @@ export default defineComponent({
       }
       return map
     })
+
+    /** 重新提取筛选器数据并推给左侧栏（视频库扫描/切换目录后必须刷新，否则左栏是旧数据） */
+    const refreshFilterData = () => {
+      try {
+        filterComposable.extractAllFilters?.()
+        const data = filterComposable.getFilterData?.()
+        if (data) emit('filter-data-updated', data)
+      } catch (error) {
+        console.warn('[GenericResourceView] 刷新筛选器数据失败:', error)
+      }
+    }
+
+    // 视频页：扫描完成或切换目录后刷新左栏筛选器
+    if (isVideoPage.value) {
+      watch(
+        () => [videoLib.lastScanAt.value, videoLib.currentRoot.value, videoLib.currentRel.value],
+        () => {
+          refreshFilterData()
+        }
+      )
+    }
 
     // 终止游戏方法
     const terminateGame = async (resource: any) => {
@@ -1097,8 +1241,7 @@ export default defineComponent({
     }
 
     // 处理资源操作（根据 actionConfig 启动资源；可选 options.handlerName 指定要执行的 handler，如 'launchWithLocale'）
-    const handleResourceAction = async (resource: any, options?: { handlerName?: string }) => {
-      // 从资源实例获取实际的资源类型
+    const handleResourceAction = async (resource: any, options?: { handlerName?: string }) => {      // 从资源实例获取实际的资源类型
       const actualResourceType = BaseResources.extractPrimitiveValue(
         resource.resourceType?.value || resource.resourceType
       ) || resource?.constructor?.name || resourceType.value
@@ -1176,6 +1319,22 @@ export default defineComponent({
         }
       }
       await executeActionHandler(resource, context)
+    }
+
+    /**
+     * 卡片上那个「主操作按钮」（封面上的 ▶️）的派发入口。
+     *
+     * 游戏走原来的 handler 注册表（launchExecutable）；
+     * 视频走 videoLib.openVideo —— 因为「打开次数 +1 / 标记丢失 / 落库」这套逻辑
+     * 只应该有一份实现，右键菜单与详情页也用的是它。
+     * （2026-10-04 主人反馈：卡片上直接点播放没反应，右键的「打开」却正常，就是这个分叉。）
+     */
+    const handleCardAction = async (resource: any) => {
+      if (isVideoPage.value) {
+        await videoLib.openVideo(resource)
+        return
+      }
+      await handleResourceAction(resource)
     }
 
     // 使用筛选 composable 的 filteredItems（已经是响应式的）
@@ -1632,7 +1791,7 @@ export default defineComponent({
     /**
      * 详情面板 / 右键菜单 共用操作：根据 actionKey 执行对应逻辑，便于复用。
      */
-    const handleDetailActionImpl = (actionKey: string, item: any) => {
+    const handleDetailActionImpl = async (actionKey: string, item: any) => {
       switch (actionKey) {
         case 'launch':
           handleResourceAction(item)
@@ -1723,6 +1882,24 @@ export default defineComponent({
             })
           break
         }
+        // ===== 视频页动作（播放 / 抽帧封面 / 删除封面 / 打开所在文件夹 / 重新关联）=====
+        case 'open':
+        case 'grab-cover':
+        case 'remove-cover':
+        case 'reveal':
+        case 'relink': {
+          try {
+            if (actionKey === 'open') await videoLib.openVideo(item)
+            else if (actionKey === 'grab-cover') await videoLib.grabCover(item)
+            else if (actionKey === 'remove-cover') await videoLib.deleteCover(item)
+            else if (actionKey === 'relink') await videoLib.relinkVideo(item)
+            else await videoLib.revealInExplorer(item)
+          } catch (error: any) {
+            console.error(`[GenericResourceView] 视频动作 ${actionKey} 失败:`, error)
+            notify.toast('error', '操作失败', error?.message || '未知错误')
+          }
+          break
+        }
         default:
           break
       }
@@ -1737,9 +1914,26 @@ export default defineComponent({
     contextMenuHandlers.edit = (item: any) => handleDetailActionImpl('edit', item)
     contextMenuHandlers.remove = (item: any) => handleDetailActionImpl('remove', item)
 
+    // 视频页：右键 / 详情面板动作（播放、抽帧封面、删封面、打开所在文件夹、重新关联）
+    contextMenuHandlers.open = (item: any) => videoLib.openVideo(item)
+    contextMenuHandlers['grab-cover'] = (item: any) => videoLib.grabCover(item)
+    contextMenuHandlers['remove-cover'] = (item: any) => videoLib.deleteCover(item)
+    contextMenuHandlers.reveal = (item: any) => videoLib.revealInExplorer(item)
+    // 文件改名/挪走后，由用户手动指认新文件（把选择权交给用户，不自动猜）
+    contextMenuHandlers.relink = (item: any) => videoLib.relinkVideo(item)
+
     contextMenuHandlers.batchAddTag = () => handleBatchAddTag()
     contextMenuHandlers.batchDeleteTag = () => handleBatchDeleteTag()
     contextMenuHandlers.batchDelete = () => handleBatchDelete()
+    // 视频页：批量抽帧（逐个串行，最后只弹一条汇总）
+    contextMenuHandlers.batchGrabCover = async () => {
+      const targets = items.value.filter((item: any) => selectedItems.value.has(item.id?.value || item.id))
+      if (targets.length === 0) {
+        notify.toast('warning', '批量抽帧', '请先选择要操作的视频')
+        return
+      }
+      await videoLib.grabCoverBatch(targets)
+    }
 
     // 通用的文件存在性检查函数
     const checkFileExistence = async (): Promise<void> => {
@@ -1901,36 +2095,45 @@ export default defineComponent({
     }
 
     /**
-     * 主页「抓阄链路」点卡片跳过来时带着 ?gameId=xxx：
-     * 数据加载完成后自动打开这款游戏的详情面板，并立刻把 query 清掉，
+     * 主页「抓阄链路」点卡片跳过来时带着 ?gameId=xxx / ?videoId=xxx：
+     * 数据加载完成后自动打开对应资源的详情面板，并立刻把 query 清掉，
      * 免得刷新/返回时又弹一次。找不到就只清 query，不打扰用户。
+     *
+     * 视频还会顺手把层级切到这条记录所在的目录 —— 关掉详情就能看到它所在的这一层。
      */
-    function openGameFromQuery() {
+    function openDetailFromQuery() {
       const queryGameId = route.query?.gameId
-      if (typeof queryGameId !== 'string' || !queryGameId) return
+      const queryVideoId = route.query?.videoId
+      const wantedId = typeof queryVideoId === 'string' && queryVideoId
+        ? queryVideoId
+        : (typeof queryGameId === 'string' && queryGameId ? queryGameId : '')
+      if (!wantedId) return
 
       const target = items.value.find((item: any) => {
         const raw = item?.id
-        return String(raw && typeof raw === 'object' && 'value' in raw ? raw.value : raw ?? '') === queryGameId
+        return String(raw && typeof raw === 'object' && 'value' in raw ? raw.value : raw ?? '') === wantedId
       })
 
       if (target) {
-        console.log(`[GenericResourceView] 按链接参数打开详情: gameId=${queryGameId}`)
+        console.log(`[GenericResourceView] 按链接参数打开详情: id=${wantedId}`)
+        // 视频：先把层级切到它所在目录，这样关掉详情面板就能看到上下文
+        if (isVideoPage.value) videoLib.focusItem(target)
         resourcePage.showDetail(target)
       } else {
-        console.warn(`[GenericResourceView] 链接参数 gameId=${queryGameId} 不在本页数据中，已忽略`)
+        console.warn(`[GenericResourceView] 链接参数 id=${wantedId} 不在本页数据中，已忽略`)
       }
 
       const restQuery = { ...route.query }
       delete restQuery.gameId
+      delete restQuery.videoId
       router.replace({ path: route.path, query: restQuery }).catch(() => {})
     }
 
     // 已经停留在本页时 query 变化（例如从主页再次点进来）也要响应
     watch(
-      () => route.query.gameId,
+      () => [route.query.gameId, route.query.videoId],
       () => {
-        openGameFromQuery()
+        openDetailFromQuery()
       }
     )
 
@@ -1985,7 +2188,16 @@ export default defineComponent({
       }
 
       // 2.5 主页抓阄链路跳过来（?gameId=xxx）时，自动打开对应游戏的详情面板
-      openGameFromQuery()
+      openDetailFromQuery()
+
+      // 2.6 视频页：数据库记录已就位 → 后台扫描绑定目录做增量同步，并开启实时监听
+      if (isVideoPage.value) {
+        videoLib.initialize({ silent: true }).then(() => {
+          refreshFilterData()
+        }).catch((error: any) => {
+          console.error('[GenericResourceView] 视频库初始化失败:', error)
+        })
+      }
 
       // 3. 加载分页设置
       console.log('[GenericResourceView] 准备加载分页设置', {
@@ -2003,8 +2215,8 @@ export default defineComponent({
         currentPage: resourcePage.currentPage
       })
       
-      // 4. 注册事件监听器
-      if (isElectronEnvironment.value && window.electronAPI && window.electronAPI.onGameProcessEnded) {
+      // 4. 注册事件监听器（游戏进程结束只跟可执行程序有关，视频页跳过）
+      if (!isVideoPage.value && isElectronEnvironment.value && window.electronAPI && window.electronAPI.onGameProcessEnded) {
         window.electronAPI.onGameProcessEnded((event: any, data: any) => {
           handleGameProcessEnded(data)
         })
@@ -2059,7 +2271,8 @@ export default defineComponent({
       
       // 组件挂载后自动检查文件存在性
       // 注意：数据加载在前面已经处理了，这里的 items.value 检查是为了处理传入 props.items 的情况
-      if (items.value && items.value.length > 0) {
+      // 视频页跳过：存在性由「扫描同步」统一负责（逐条 IPC 检查在万级文件下会拖死主进程）
+      if (!isVideoPage.value && items.value && items.value.length > 0) {
         await checkFileExistence()
         // 自动计算资源大小
         await calculateResourceSizes()
@@ -2068,6 +2281,12 @@ export default defineComponent({
     
     // 组件卸载前清理事件监听器
     onBeforeUnmount(() => {
+      // 视频页：停掉 atime 轮询与目录监听
+      if (isVideoPage.value) {
+        videoLib.dispose().catch((error: any) => {
+          console.warn('[GenericResourceView] 视频库资源释放失败:', error)
+        })
+      }
       window.removeEventListener('game-request-update-playtime', handleRequestUpdatePlaytime as EventListener)
       window.removeEventListener('game-request-final-playtime', handleRequestFinalPlaytime as EventListener)
       // 清理定时器
@@ -2088,6 +2307,8 @@ export default defineComponent({
     watch(
       () => items.value.length,
       async (newLength, oldLength) => {
+        // 视频页：存在性/大小都由扫描结果维护，这里不做逐条 IPC 检查
+        if (isVideoPage.value) return
         // 只在数据从空变为有数据，或者数据数量变化时检查
         if (newLength > 0 && (oldLength === 0 || newLength !== oldLength)) {
           // 延迟一点执行，确保数据已经更新完成
@@ -2303,6 +2524,14 @@ export default defineComponent({
         resourcePage.showAddDialogHandler()
       } else if (item.action === 'filterBySearch') {
         // 搜索操作不需要额外处理，搜索框已经绑定了 searchQuery
+      } else if (item.action === 'bindVideoFolder') {
+        // 视频页：绑定文件夹（自动递归扫描）
+        await videoLib.bindFolder()
+        refreshFilterData()
+      } else if (item.action === 'rescanVideoLibrary') {
+        // 视频页：手动重新扫描（实时监听不可用时的兜底）
+        await videoLib.rescan()
+        refreshFilterData()
       } else if (item.action === 'batchLatestScreenshotCover') {
         // 全局：给当前页所有无封面的游戏装载「最新截图」作为封面
         await handleBatchLatestScreenshotCover()
@@ -2489,9 +2718,245 @@ export default defineComponent({
       }
     }
 
+    /* ------------------------------------------------------------------ */
+    /* 视频页专属：层级浏览 UI + 空状态                                  */
+    /* ------------------------------------------------------------------ */
+    /** 面包屑（视频页） */
+    const videoBreadcrumb = videoLib.breadcrumb
+    /** 当前层的文件夹卡片（视频页） */
+    const videoFolderCards = videoLib.folderCards
+
+    /**
+     * 当前是否有生效中的搜索/筛选。
+     * 这决定空状态该说「没找到匹配」还是「这一层本来就没有」。
+     */
+    const hasActiveSearchOrFilter = computed(() => {
+      if (String(searchQuery.value || '').trim() !== '') return true
+      const states = (filterComposable as any).filterStates || {}
+      return Object.keys(states).some(key => {
+        const state = states[key]
+        return (state?.selected?.value?.length || 0) > 0 || (state?.excluded?.value?.length || 0) > 0
+      })
+    })
+
+    /**
+     * 空状态覆盖（只给视频页用；返回 undefined 表示「交给 BaseView 原逻辑」，返回 null 表示「不显示」）
+     *
+     * 修的坑（主人 2026-10-04 反馈）：某一层**只有文件夹、没有视频**时，
+     * BaseView 只看「items 有值但 filteredItems 为空」，于是弹出一块
+     * 「没有找到匹配的视频 / 尝试使用不同的搜索词」盖在文件夹卡片上 —— 明明是正常的目录层。
+     */
+    const emptyStateOverride = computed(() => {
+      if (!isVideoPage.value) return undefined
+
+      // 有搜索/筛选：没结果才是真的「没找到」
+      if (hasActiveSearchOrFilter.value) {
+        if (filterComposable.filteredGames.value.length > 0) return null
+        if (visibleFolderCards.value.length > 0) return null // 还有对得上的文件夹可钻
+        return {
+          icon: '🔍',
+          title: '没有找到匹配的视频',
+          description: '支持空格分词与模糊匹配（比如「第二 改名」「第二部改名」都能搜到 第二部_改名了.mkv）',
+          showButton: false
+        }
+      }
+
+      // 一个目录都没绑：引导绑定
+      if (!videoLib.hasRoots.value) {
+        return {
+          icon: '🎬',
+          title: '还没有绑定视频文件夹',
+          description: '点击「绑定文件夹」后会自动递归扫描其中的视频（含子文件夹）；本页只做标签与封面管理',
+          showButton: true,
+          buttonText: '绑定文件夹',
+          onAction: 'bindVideoFolder'
+        }
+      }
+
+      // 这一层有文件夹卡片：让文件夹自己说话，别用「没找到」盖住
+      if (visibleFolderCards.value.length > 0) return null
+      if (!showFolderCards.value && videoLib.folderCards.value.length > 0) return null // 用户主动隐藏了文件夹
+
+      // 这一层真的什么都没有（没视频也没子文件夹）
+      if (videoLib.scopedItems.value.length === 0) {
+        return {
+          icon: '📂',
+          title: '这一层没有视频',
+          description: '往上一层看看，或者点上方面包屑回到别的目录',
+          showButton: false
+        }
+      }
+
+      return null
+    })
+
+    /* --------------------- 视频页：文件夹在筛选/搜索下的可见性 --------------------- */
+
+    /** 是否显示文件夹卡片（本地偏好，默认显示） */
+    const SHOW_FOLDERS_STORAGE_KEY = 'ggv-video-show-folders'
+    const showFolderCards = ref(true)
+    // 记住上次的选择
+    try {
+      const saved = typeof localStorage !== 'undefined' ? localStorage.getItem(SHOW_FOLDERS_STORAGE_KEY) : null
+      if (saved === '0') showFolderCards.value = false
+    } catch (_) {
+      // 忽略
+    }
+
+    /** 左栏「标签筛选」当前选中的 include / exclude（文件夹并集判定要用） */
+    const activeTagFilter = computed(() => {
+      const state = (filterComposable as any).filterStates?.tags
+      return {
+        include: [...(state?.selected?.value || [])] as string[],
+        exclude: [...(state?.excluded?.value || [])] as string[]
+      }
+    })
+
+    /** 某条视频是否命中当前搜索（与页面搜索用同一套字段与匹配规则） */
+    const matchVideoByQuery = (item: any) => {
+      const query = String(searchQuery.value || '').trim()
+      if (!query) return true
+      const fields: string[] = ResourceClass?.searchFields || ['name']
+      const texts = fields.flatMap(field => collectSearchTexts(item?.[field]))
+      return matchesFuzzy(texts, query)
+    }
+
+    /** 取某条视频所在目录（相对根目录；根下为 ''） */
+    const folderPathOfVideo = (item: any): string => {
+      const rel = String(BaseResources.extractPrimitiveValue(item?.relPath) || '')
+      const index = rel.lastIndexOf('/')
+      return index > 0 ? rel.slice(0, index) : ''
+    }
+
+    /** 取某条视频的标签 */
+    const tagsOfVideo = (item: any): string[] => {
+      const raw = BaseResources.extractPrimitiveValue(item?.tags)
+      return Array.isArray(raw) ? raw.filter((tag: unknown): tag is string => typeof tag === 'string' && tag !== '') : []
+    }
+
+    /**
+     * 当前层里、直接属于某个文件夹卡片的视频。
+     *  - folder 卡片：rootPath 相同、且所在目录正好等于卡片 rel
+     *  - root 卡片：rootPath 相同、且就在根目录下（rel 无斜杠）
+     */
+    const directVideosOfFolder = (folder: any): any[] => {
+      const rootKey = pathKeyOf(folder.root)
+      return (items.value || []).filter((item: any) => {
+        const itemRoot = String(BaseResources.extractPrimitiveValue(item?.rootPath) || '')
+        if (pathKeyOf(itemRoot) !== rootKey) return false
+        const folderPath = folderPathOfVideo(item)
+        return folder.kind === 'folder' ? folderPath === (folder.rel || '') : folderPath === ''
+      })
+    }
+
+    /** 实际显示给用户看的文件夹卡片（受标签筛选 / 搜索 / 「显示文件夹」开关影响） */
+    const visibleFolderCards = computed(() => {
+      if (!isVideoPage.value) return []
+      if (!showFolderCards.value) return []
+
+      return filterVisibleFolders(videoLib.folderCards.value, {
+        query: String(searchQuery.value || '').trim(),
+        tagFilter: activeTagFilter.value,
+        matchVideo: matchVideoByQuery,
+        tagsOfVideo,
+        directVideosOf: directVideosOfFolder
+      })
+    })
+
+    /** 「显示文件夹」开关（记在本地） */
+    const toggleShowFolderCards = () => {
+      showFolderCards.value = !showFolderCards.value
+      try {
+        localStorage.setItem(SHOW_FOLDERS_STORAGE_KEY, showFolderCards.value ? '1' : '0')
+      } catch (error) {
+        console.warn('[GenericResourceView] 保存「显示文件夹」失败:', error)
+      }
+    }
+    const videoIsScanning = videoLib.isScanning
+    const videoWatcherHealthy = videoLib.watcherHealthy
+    const videoHasRoots = videoLib.hasRoots
+    const videoFfmpegAvailable = computed(() => !!videoLib.ffmpegInfo.value?.available)
+
+    /** 进入子目录 */
+    const handleFolderClick = (folder: any) => {
+      videoLib.enterFolder(folder)
+      resourcePage.resetToFirstPage?.()
+    }
+
+    /** 面包屑跳转 */
+    const handleBreadcrumbClick = (crumb: any) => {
+      videoLib.goToBreadcrumb(crumb)
+      resourcePage.resetToFirstPage?.()
+    }
+
+    /** 返回上一级 */
+    const handleGoUp = () => {
+      videoLib.goUp()
+      resourcePage.resetToFirstPage?.()
+    }
+
+    /** 解除绑定（只解除绑定，不删记录、不碰文件） */
+    const handleUnbindRoot = async (folder: any) => {
+      const ok = await videoLib.unbindFolder(folder.root || folder.fullPath)
+      if (ok) refreshFilterData()
+    }
+
+    /** 在资源管理器里打开文件夹 */
+    const handleOpenFolderInExplorer = async (folder: any) => {
+      if (!isElectronEnvironment.value || !window.electronAPI?.openFolder) return
+      await window.electronAPI.openFolder(folder.fullPath)
+    }
+
+    /** 手动重新扫描 */
+    const handleRescanVideoLibrary = async () => {
+      await videoLib.rescan()
+      refreshFilterData()
+    }
+
+    /** 绑定文件夹 */
+    const handleBindVideoFolder = async () => {
+      const ok = await videoLib.bindFolder()
+      if (ok) refreshFilterData()
+    }
+
+    /**
+     * 空状态按钮：视频页走「绑定文件夹」，其它页面沿用 createResourcePage 的默认行为
+     */
+    const handleEmptyStateActionImpl = (actionName: string) => {
+      if (isVideoPage.value && actionName === 'bindVideoFolder') {
+        handleBindVideoFolder()
+        return
+      }
+      resourcePage.handleEmptyStateAction(actionName)
+    }
+
     return {
       resourceType, // 返回 computed，保持响应式
       isElectronEnvironment,
+      // 是否视频页（模板用它切换专属 UI）
+      isVideoPage,
+      // 视频页专属状态与方法
+      videoBreadcrumb,
+      videoFolderCards,
+      // 受标签筛选/搜索/「显示文件夹」开关影响的文件夹卡片
+      visibleFolderCards,
+      showFolderCards,
+      toggleShowFolderCards,
+      // 视频页的空状态覆盖（文件夹层不再被「没有找到匹配的视频」盖住）
+      emptyStateOverride,
+      videoIsScanning,
+      videoWatcherHealthy,
+      videoHasRoots,
+      videoFfmpegAvailable,
+      handleFolderClick,
+      handleBreadcrumbClick,
+      handleGoUp,
+      handleUnbindRoot,
+      handleOpenFolderInExplorer,
+      handleRescanVideoLibrary,
+      handleBindVideoFolder,
+      // 卡片主操作按钮的统一派发（视频→openVideo，游戏→launchExecutable）
+      handleCardAction,
       // 多选模式相关
       isMultiSelectMode,
       selectedItems,
@@ -2593,6 +3058,8 @@ export default defineComponent({
       // 详情面板操作处理（与右键菜单共用 handleDetailActionImpl）
       handleDetailAction: handleDetailActionImpl,
       ...resourcePage, // 展开所有方法和属性，使模板可以直接访问
+      // 空状态按钮（必须在 ...resourcePage 之后：视频页要覆盖成「绑定文件夹」）
+      handleEmptyStateAction: handleEmptyStateActionImpl,
       // 批量操作相关（必须在 ...resourcePage 之后，以覆盖 resourcePage 中的 contextMenuItems）
       handleBatchAddTag,
       handleBatchDeleteTag,
@@ -2600,7 +3067,6 @@ export default defineComponent({
       contextMenuItems,
       // 明确声明方法，确保 TypeScript 能正确识别
       updateScale: resourcePage.updateScale,
-      handleEmptyStateAction: resourcePage.handleEmptyStateAction,
       showAddDialogHandler: resourcePage.showAddDialogHandler,
       handleSortChanged: resourcePage.handleSortChanged,
       handleSearchQueryChanged: resourcePage.handleSearchQueryChanged,
@@ -3086,5 +3552,243 @@ export default defineComponent({
     width: 95vw;
     margin: var(--spacing-xl);
   }
+}
+
+/* ========================================================================== */
+/* 视频页：面包屑 + 文件夹卡片                                                 */
+/* ========================================================================== */
+
+.video-path-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 20px 4px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+
+.video-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+  font-size: 0.88rem;
+}
+
+.video-crumb-home {
+  opacity: 0.7;
+}
+
+.video-crumb {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  color: var(--accent-color, #66c0f4);
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: background 0.15s;
+
+  &:hover {
+    background: var(--bg-tertiary);
+  }
+
+  &.is-current {
+    color: var(--text-primary);
+    cursor: default;
+
+    &:hover {
+      background: transparent;
+    }
+  }
+}
+
+.video-crumb-sep {
+  color: var(--text-tertiary);
+  opacity: 0.6;
+}
+
+.video-path-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.video-status {
+  font-size: 0.78rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+
+  &.is-scanning {
+    color: var(--accent-color, #66c0f4);
+    background: rgba(102, 192, 244, 0.12);
+  }
+
+  &.is-warn {
+    color: #f59e0b;
+    background: rgba(245, 158, 11, 0.12);
+  }
+
+  &.is-hint {
+    color: var(--text-tertiary);
+    background: var(--bg-tertiary);
+  }
+}
+
+.video-mini-btn {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.15s;
+
+  &:hover {
+    background: var(--bg-primary);
+  }
+}
+
+/* 文件夹卡片：与 MediaCard 同宽，行高由同一行的视频卡片决定 */
+.video-folder-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  /* ⚠️ 这里**不能**用 aspect-ratio：
+     FunGrid 是 display:grid 且默认 align-items:stretch，行高取「该行最高的项」。
+     一旦文件夹卡片用 aspect-ratio 定高（3/4 会远高于视频卡片），
+     整行就被顶高，同行的视频卡片下方会空出一大片 —— 主人 2026-10-04 指出的就是这个。
+     只给 min-height：单独成行时撑出卡片感，与视频卡片同行时跟随行高。 */
+  min-height: 200px;
+  padding: 14px;
+  border: 1px dashed var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  cursor: pointer;
+  overflow: hidden;
+  transition: transform 0.15s, border-color 0.15s, background 0.15s;
+
+  &:hover {
+    transform: translateY(-2px);
+    border-color: var(--accent-color, #66c0f4);
+    background: var(--bg-tertiary);
+  }
+
+  &.is-root {
+    border-style: solid;
+    border-color: var(--accent-color, #66c0f4);
+  }
+}
+
+.folder-icon {
+  font-size: 2.6rem;
+  line-height: 1;
+  filter: saturate(0.9);
+}
+
+.folder-name {
+  max-width: 100%;
+  text-align: center;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-all;
+}
+
+/* 文件夹直接包含的视频标签并集（筛选下靠它判断这个夹子要不要显示） */
+.folder-tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.folder-tag {
+  font-size: 0.68rem;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-tag-more {
+  font-size: 0.68rem;
+  color: var(--text-tertiary);
+}
+
+/* 「显示文件夹」开关处于关闭态时给个视觉反馈 */
+.video-mini-btn.is-off {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+
+.folder-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+}
+
+.folder-open {
+  background: transparent;
+  border: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 0 4px;
+  border-radius: 4px;
+
+  &:hover {
+    color: var(--accent-color, #66c0f4);
+    background: var(--bg-primary);
+  }
+}
+
+.folder-unbind {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font-size: 0.72rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  &:hover {
+    background: #ef4444;
+  }
+}
+
+.video-folder-card:hover .folder-unbind {
+  opacity: 1;
 }
 </style>

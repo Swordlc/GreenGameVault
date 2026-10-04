@@ -7,8 +7,10 @@ import { sortBy as sortByUtil } from '../utils/sortBy'
 import type { SortConfig } from '../utils/sortBy'
 import { getFilterFunctions } from '../configs/filters/filterLibrary.ts'
 import { pageConfigLoader } from '../configs/pages/PageConfigLoader.ts'
+import { collectSearchTexts, matchesFuzzy } from '../utils/fuzzySearch'
 
-const DATE_FIELDS = ['addedDate', 'lastRead', 'lastPlayed', 'lastViewed']
+// 需要按「时间」比较大小的字段（lastOpened 是视频页的派生 getter）
+const DATE_FIELDS = ['addedDate', 'lastRead', 'lastPlayed', 'lastViewed', 'lastOpened']
 
 function buildSortConfig(config: SortOptionConfig): SortConfig<any> {
   return {
@@ -124,6 +126,15 @@ export function useResourceFilter<T = any>(
 
   // 获取筛选配置
   let filterConfigs = pageConfig.filterConfig || []
+
+  /**
+   * 参与「模糊搜索」的字段名列表。
+   * 有值 → 走文件管理器式模糊搜索（多词 AND、忽略分隔符、子序列）；
+   * 空   → 保持旧的 name-子串语义（游戏页不传，行为不变）。
+   */
+  const searchFields: string[] = Array.isArray(additionalData?.searchFields)
+    ? additionalData.searchFields.filter((field: unknown): field is string => typeof field === 'string' && field !== '')
+    : []
   
   // 解析 filterType 配置，将 filterType 转换为实际的函数
   filterConfigs = resolveFilterConfigs(filterConfigs)
@@ -302,28 +313,36 @@ export function useResourceFilter<T = any>(
    */
   const filteredItems = computed(() => {
     let filtered = items.value.filter(item => {
-      // 获取资源名称用于搜索
-      const name = getFieldValue<string>((item as any).name) || ''
-      
-      // 搜索筛选
-      const searchLower = searchQuery.value.toLowerCase()
-      const matchesSearch = name.toLowerCase().includes(searchLower) ||
-        // 可以扩展搜索范围，从筛选配置中提取可搜索字段
-        filterConfigs.some(config => {
-          // 如果没有 fieldAccessor，跳过这个配置
-          if (!config.fieldAccessor) {
-            return false
-          }
-          const fieldValue = config.fieldAccessor(item)
-          if (config.isArray) {
-            const values = Array.isArray(fieldValue) ? fieldValue.map(v => String(v).toLowerCase()) : []
-            return values.some(v => v.includes(searchLower))
-          } else {
-            return String(fieldValue).toLowerCase().includes(searchLower)
-          }
-        })
+      // ===== 搜索 =====
+      // 传了 additionalData.searchFields → 走「文件管理器式」模糊搜索（多词 AND + 去分隔符 + 子序列）
+      // 没传 → 保持旧语义（name 子串 + 各筛选字段子串），游戏页行为不变
+      if (searchFields.length > 0) {
+        const texts = searchFields.flatMap(field => collectSearchTexts((item as any)[field]))
+        if (!matchesFuzzy(texts, searchQuery.value)) return false
+      } else {
+        // 获取资源名称用于搜索
+        const name = getFieldValue<string>((item as any).name) || ''
 
-      if (!matchesSearch) return false
+        // 搜索筛选
+        const searchLower = searchQuery.value.toLowerCase()
+        const matchesSearch = name.toLowerCase().includes(searchLower) ||
+          // 可以扩展搜索范围，从筛选配置中提取可搜索字段
+          filterConfigs.some(config => {
+            // 如果没有 fieldAccessor，跳过这个配置
+            if (!config.fieldAccessor) {
+              return false
+            }
+            const fieldValue = config.fieldAccessor(item)
+            if (config.isArray) {
+              const values = Array.isArray(fieldValue) ? fieldValue.map(v => String(v).toLowerCase()) : []
+              return values.some(v => v.includes(searchLower))
+            } else {
+              return String(fieldValue).toLowerCase().includes(searchLower)
+            }
+          })
+
+        if (!matchesSearch) return false
+      }
 
       // 对每个筛选配置进行匹配
       for (const config of filterConfigs) {

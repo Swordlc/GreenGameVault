@@ -104,6 +104,19 @@ export default {
                 pageType: ''
             })
         },
+        /**
+         * 空状态覆盖：
+         *   undefined（默认）→ 用组件内置判断（items 为空 = 库空；filteredItems 为空 = 没匹配）
+         *   null            → 明确「不显示空状态」
+         *   对象            → 直接用它（{ icon, title, description, showButton, buttonText, onAction }）
+         *
+         * 视频页用它解决「某一层只有文件夹、没有视频」时被
+         * 「没有找到匹配的视频」盖住文件夹卡片的问题。
+         */
+        emptyStateOverride: {
+            type: Object,
+            default: undefined
+        },
         // 右键菜单相关属性
         contextMenuItems: {
             type: Array,
@@ -160,6 +173,11 @@ export default {
     ],
     computed: {
         currentEmptyState() {
+            // 页面显式接管了空状态（视频页的目录层就是这种情况）
+            if (this.emptyStateOverride !== undefined) {
+                return this.emptyStateOverride
+            }
+
             // 如果没有任何数据
             if (this.items.length === 0) {
                 return {

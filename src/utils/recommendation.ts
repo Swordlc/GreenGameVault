@@ -112,19 +112,23 @@ export interface ChainPick {
   eligibleCount: number
 }
 
-interface Scored {
-  game: HomeGame
+interface Scored<T = HomeGame> {
+  item: T
   /** 越大越贴合链路主题 */
   metric: number
   /** 1-based 名次 */
   rank: number
 }
 
+/** 供视频推荐复用的打分结果类型 */
+export type { Scored }
+
 /* -------------------------------------------------------------------------- */
 /* 归一化与筛选                                                                */
 /* -------------------------------------------------------------------------- */
 
-function firstNonEmptyString(...values: unknown[]): string | null {
+/** 取第一个非空字符串（视频推荐复用） */
+export function firstNonEmptyString(...values: unknown[]): string | null {
   for (const value of values) {
     if (typeof value === 'string' && value.trim() !== '') return value
   }
@@ -157,8 +161,10 @@ export function toHomeGame(raw: any): HomeGame {
  * 标签全局筛选，语义与游戏管理页左侧标签栏完全一致：
  *  - exclude：命中任意一个排除标签即淘汰（NOT ANY）
  *  - include：必须命中全部选中标签（AND）
+ *
+ * 泛型化以便视频库复用（视频的标签语义完全一样）。
  */
-export function filterGamesByTags(games: HomeGame[], filter: TagFilterState): HomeGame[] {
+export function filterGamesByTags<T extends { tags: string[] }>(games: T[], filter: TagFilterState): T[] {
   const include = filter?.include ?? []
   const exclude = filter?.exclude ?? []
   if (include.length === 0 && exclude.length === 0) return games
@@ -172,7 +178,7 @@ export function filterGamesByTags(games: HomeGame[], filter: TagFilterState): Ho
 }
 
 /** 统计全库标签及出现次数（下拉列表用），按名称排序 */
-export function collectTagOptions(games: HomeGame[]): Array<{ name: string; count: number }> {
+export function collectTagOptions(games: Array<{ tags: string[] }>): Array<{ name: string; count: number }> {
   const counter = new Map<string, number>()
   for (const game of games) {
     for (const tag of game.tags) {
@@ -188,7 +194,8 @@ export function collectTagOptions(games: HomeGame[]): Array<{ name: string; coun
 /* 打分                                                                        */
 /* -------------------------------------------------------------------------- */
 
-function safeTime(value: string | null): number | null {
+/** 安全解析 ISO 时间；无效返回 null（视频推荐复用） */
+export function safeTime(value: string | null): number | null {
   if (!value) return null
   const time = Date.parse(value)
   return Number.isFinite(time) ? time : null
@@ -205,8 +212,8 @@ export function idleDaysOf(game: HomeGame, now: number): number {
  * 按链路主题给游戏打分并降序排名。
  * 返回的 metric 只在同一链路内可比，仅用于「谁更贴合主题」。
  */
-export function scoreChain(games: HomeGame[], chainId: ChainId, now: number = Date.now()): Scored[] {
-  let scored: Array<{ game: HomeGame; metric: number }>
+export function scoreChain(games: HomeGame[], chainId: ChainId, now: number = Date.now()): Scored<HomeGame>[] {
+  let scored: Array<{ item: HomeGame; metric: number }>
 
   if (chainId === 'most-played') {
     // 只考虑玩过的（playTime / playCount 至少有一个 > 0）
@@ -215,7 +222,7 @@ export function scoreChain(games: HomeGame[], chainId: ChainId, now: number = Da
     const maxPlayCount = played.reduce((max, game) => Math.max(max, game.playCount), 0)
 
     scored = played.map(game => ({
-      game,
+      item: game,
       metric:
         (maxPlayTime > 0 ? PLAY_TIME_WEIGHT * (game.playTime / maxPlayTime) : 0) +
         (maxPlayCount > 0 ? PLAY_COUNT_WEIGHT * (game.playCount / maxPlayCount) : 0)
@@ -225,19 +232,19 @@ export function scoreChain(games: HomeGame[], chainId: ChainId, now: number = Da
     scored = games
       .map(game => ({ game, time: safeTime(game.lastPlayed) }))
       .filter((entry): entry is { game: HomeGame; time: number } => entry.time !== null)
-      .map(entry => ({ game: entry.game, metric: entry.time }))
+      .map(entry => ({ item: entry.game, metric: entry.time }))
   } else {
     // up-next：空置天数越大越靠前，从未玩过的也参与
-    scored = games.map(game => ({ game, metric: idleDaysOf(game, now) }))
+    scored = games.map(game => ({ item: game, metric: idleDaysOf(game, now) }))
   }
 
   return scored
     .sort((a, b) => {
       if (b.metric !== a.metric) return b.metric - a.metric
       // 指标相同时用名称做稳定排序，避免同一份数据每次顺序抖动
-      return a.game.name.localeCompare(b.game.name, 'zh-CN')
+      return a.item.name.localeCompare(b.item.name, 'zh-CN')
     })
-    .map((entry, index) => ({ game: entry.game, metric: entry.metric, rank: index + 1 }))
+    .map((entry, index) => ({ item: entry.item, metric: entry.metric, rank: index + 1 }))
 }
 
 /** 候选池大小：小库全收，大库取 top-K（K 至少是一行的 MIN_POOL_FACTOR 倍，保证抽签有腾挪空间） */
@@ -254,8 +261,14 @@ export function resolvePoolSize(eligibleCount: number, count: number): number {
 /**
  * 按「池内相对贴合度 ^ gamma」为权重，不放回地抽 k 个。
  * 最不贴合的也有 MIN_RELATIVE_FITNESS 的保底贴合度 ⇒ 小概率可被抽中。
+ *
+ * 导出是为了给「视频」推荐复用同一套抽样数学（游戏与视频只差打分口径）。
  */
-function weightedSampleWithoutReplacement(candidates: Scored[], k: number, rng: () => number): Scored[] {
+export function weightedSampleWithoutReplacement<T>(
+  candidates: Scored<T>[],
+  k: number,
+  rng: () => number
+): Scored<T>[] {
   if (k <= 0 || candidates.length === 0) return []
 
   const metrics = candidates.map(entry => entry.metric)
@@ -269,7 +282,7 @@ function weightedSampleWithoutReplacement(candidates: Scored[], k: number, rng: 
     return { entry, weight: Math.pow(fitness, WEIGHT_GAMMA) }
   })
 
-  const picked: Scored[] = []
+  const picked: Scored<T>[] = []
   const wanted = Math.min(k, pool.length)
 
   while (picked.length < wanted) {
@@ -294,21 +307,80 @@ function weightedSampleWithoutReplacement(candidates: Scored[], k: number, rng: 
 }
 
 /** 重抽时若与上一批随机位完全相同则再抽一次，避免「重新推荐」按钮看起来没反应 */
-function sampleAvoidingPrevious(
-  candidates: Scored[],
+function sampleAvoidingPrevious<T extends { id: string }>(
+  candidates: Scored<T>[],
   k: number,
   rng: () => number,
   avoidIds: string[]
-): Scored[] {
+): Scored<T>[] {
   let picked = weightedSampleWithoutReplacement(candidates, k, rng)
   if (avoidIds.length === 0 || picked.length === 0) return picked
 
   const avoid = new Set(avoidIds)
   for (let attempt = 0; attempt < MAX_RESAMPLE_ATTEMPTS; attempt++) {
-    if (!picked.every(entry => avoid.has(entry.game.id))) return picked
+    if (!picked.every(entry => avoid.has(entry.item.id))) return picked
     picked = weightedSampleWithoutReplacement(candidates, k, rng)
   }
   return picked
+}
+
+/** 通用抽签结果（游戏 / 视频共用一套结构） */
+export interface ChainPickResult<T> {
+  /** 已按链路名次排好序的展示列表 */
+  items: T[]
+  /** 每项的 1-based 名次 */
+  rankOf: Record<string, number>
+  /** 固定席位（前 pinnedCount 名）的 id */
+  pinnedIds: string[]
+  /** 本次随机位抽中的 id（用于下次 avoidIds） */
+  randomIds: string[]
+  /** 候选池大小 */
+  poolSize: number
+  /** 有资格参与本链路的条数 */
+  eligibleCount: number
+}
+
+/**
+ * 从「已打分排序」的候选里抽一条链路的展示名单。
+ * 固定席位 = 指标最强的 pinnedCount 名；其余名额 = 候选池内加权随机。
+ *
+ * 游戏与视频都走这里 —— 差别只在各自的打分函数。
+ */
+export function pickFromScored<T extends { id: string }>(
+  scored: Scored<T>[],
+  options: { count?: number; pinnedCount?: number; rng?: () => number; avoidIds?: string[] } = {}
+): ChainPickResult<T> {
+  const count = options.count ?? DEFAULT_ROW_SIZE
+  const pinnedCount = options.pinnedCount ?? DEFAULT_PINNED_SIZE
+  const rng = options.rng ?? Math.random
+  const avoidIds = options.avoidIds ?? []
+
+  if (scored.length === 0) {
+    return { items: [], rankOf: {}, pinnedIds: [], randomIds: [], poolSize: 0, eligibleCount: 0 }
+  }
+
+  const poolSize = resolvePoolSize(scored.length, count)
+  const pool = scored.slice(0, poolSize)
+  const pinned = pool.slice(0, Math.min(pinnedCount, pool.length))
+  const pinnedIdSet = new Set(pinned.map(entry => entry.item.id))
+
+  const randomSlots = Math.min(count - pinned.length, pool.length - pinned.length)
+  const candidates = pool.filter(entry => !pinnedIdSet.has(entry.item.id))
+  const picked = sampleAvoidingPrevious(candidates, randomSlots, rng, avoidIds)
+
+  const chosen = [...pinned, ...picked].sort((a, b) => a.rank - b.rank)
+
+  const rankOf: Record<string, number> = {}
+  for (const entry of chosen) rankOf[entry.item.id] = entry.rank
+
+  return {
+    items: chosen.map(entry => entry.item),
+    rankOf,
+    pinnedIds: pinned.map(entry => entry.item.id),
+    randomIds: picked.map(entry => entry.item.id),
+    poolSize,
+    eligibleCount: scored.length
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -320,38 +392,22 @@ function sampleAvoidingPrevious(
  * 固定席位 = 指标最强的 pinnedCount 名；其余名额 = 候选池内加权随机。
  */
 export function pickChain(games: HomeGame[], chainId: ChainId, options: ChainPickOptions = {}): ChainPick {
-  const count = options.count ?? DEFAULT_ROW_SIZE
-  const pinnedCount = options.pinnedCount ?? DEFAULT_PINNED_SIZE
-  const rng = options.rng ?? Math.random
   const now = options.now ?? Date.now()
-  const avoidIds = options.avoidIds ?? []
-
   const scored = scoreChain(games, chainId, now)
-  if (scored.length === 0) {
-    return { games: [], rankOf: {}, pinnedIds: [], randomIds: [], poolSize: 0, eligibleCount: 0 }
-  }
-
-  const poolSize = resolvePoolSize(scored.length, count)
-  const pool = scored.slice(0, poolSize)
-  const pinned = pool.slice(0, Math.min(pinnedCount, pool.length))
-  const pinnedIdSet = new Set(pinned.map(entry => entry.game.id))
-
-  const randomSlots = Math.min(count - pinned.length, pool.length - pinned.length)
-  const candidates = pool.filter(entry => !pinnedIdSet.has(entry.game.id))
-  const picked = sampleAvoidingPrevious(candidates, randomSlots, rng, avoidIds)
-
-  const chosen = [...pinned, ...picked].sort((a, b) => a.rank - b.rank)
-
-  const rankOf: Record<string, number> = {}
-  for (const entry of chosen) rankOf[entry.game.id] = entry.rank
+  const picked = pickFromScored(scored, {
+    count: options.count,
+    pinnedCount: options.pinnedCount,
+    rng: options.rng,
+    avoidIds: options.avoidIds
+  })
 
   return {
-    games: chosen.map(entry => entry.game),
-    rankOf,
-    pinnedIds: pinned.map(entry => entry.game.id),
-    randomIds: picked.map(entry => entry.game.id),
-    poolSize,
-    eligibleCount: scored.length
+    games: picked.items,
+    rankOf: picked.rankOf,
+    pinnedIds: picked.pinnedIds,
+    randomIds: picked.randomIds,
+    poolSize: picked.poolSize,
+    eligibleCount: picked.eligibleCount
   }
 }
 

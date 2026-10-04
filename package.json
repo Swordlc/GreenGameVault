@@ -1,7 +1,7 @@
 {
   "name": "green-game-vault",
-  "version": "1.1.0",
-  "description": "GreenGameVault —— 轻量本地游戏库管理器，支持标签管理与游戏内截图",
+  "version": "1.2.0",
+  "description": "GreenGameVault —— 轻量本地游戏库管理器，支持标签管理、游戏内截图与视频库（绑定文件夹 / 抽帧封面 / 打开次数）",
   "main": "electron/main.js",
   "homepage": "./",
   "scripts": {
@@ -61,6 +61,7 @@
       "public/unlock.mp3",
       "public/camera.mp3",
       "public/default-game.png",
+      "public/default-video.png",
       "public/icon/**/*",
       "node_modules/**/*"
     ],

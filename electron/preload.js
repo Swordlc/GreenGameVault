@@ -57,7 +57,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   detectLocaleEmulator: () => ipcRenderer.invoke('detect-locale-emulator'),
   selectImageFile: (defaultPath) => ipcRenderer.invoke('select-image-file', defaultPath),
   selectScreenshotImage: (screenshotDir) => ipcRenderer.invoke('select-screenshot-image', screenshotDir),
-  selectVideoFile: () => ipcRenderer.invoke('select-video-file'),
+  selectVideoFile: (defaultPath) => ipcRenderer.invoke('select-video-file', defaultPath),
   selectFolder: () => ipcRenderer.invoke('select-folder'),
   // 根据过滤器数组选择文件（统一入口）
   selectFileWithExtensions: (filters, defaultPath, title) => ipcRenderer.invoke('select-file-with-extensions', filters, defaultPath, title),
@@ -187,7 +187,36 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 封面管理
   saveCoverToFolder: (sourceImagePath, saveDataDir, resourceType, resourceId) => ipcRenderer.invoke('save-cover-to-folder', sourceImagePath, saveDataDir, resourceType, resourceId),
   saveCoverFromDataUrl: (dataUrl, saveDataDir, resourceType, resourceId) => ipcRenderer.invoke('save-cover-from-dataurl', dataUrl, saveDataDir, resourceType, resourceId),
-  getCoverFullPath: (coverPath, saveDataDir) => ipcRenderer.invoke('get-cover-full-path', coverPath, saveDataDir)
+  getCoverFullPath: (coverPath, saveDataDir) => ipcRenderer.invoke('get-cover-full-path', coverPath, saveDataDir),
+
+  // ===== 视频页（绑定文件夹 / 实时监听 / 抽帧封面 / 打开次数）=====
+  // 递归扫描绑定目录下的全部视频文件
+  videoScan: (payload) => ipcRenderer.invoke('video-scan', payload),
+  // 开始 / 停止监听绑定目录（变化时主进程推 video-library-changed 事件）
+  videoWatchStart: (roots) => ipcRenderer.invoke('video-watch-start', roots),
+  videoWatchStop: () => ipcRenderer.invoke('video-watch-stop'),
+  // ffmpeg 可用性（抽帧优先用 ffmpeg，不可用时回退 canvas）
+  videoFfmpegInfo: () => ipcRenderer.invoke('video-ffmpeg-info'),
+  // 随机抽 1 帧并【覆盖】写入封面（固定文件名，不膨胀）
+  videoGrabCover: (payload) => ipcRenderer.invoke('video-grab-cover', payload),
+  // canvas 回退：把 dataURL 覆盖写入封面
+  videoSaveCoverDataUrl: (payload) => ipcRenderer.invoke('video-save-cover-dataurl', payload),
+  // 删除封面
+  videoDeleteCover: (payload) => ipcRenderer.invoke('video-delete-cover', payload),
+  // 用系统默认播放器打开视频
+  videoOpen: (payload) => ipcRenderer.invoke('video-open', payload),
+  // 打开文件所在文件夹并选中
+  videoReveal: (filePath) => ipcRenderer.invoke('video-reveal', filePath),
+  // 批量取文件时间戳（atime 兜底统计打开次数）
+  videoStat: (filePaths) => ipcRenderer.invoke('video-stat', filePaths),
+  // 「重新关联到…」：校验用户挑的新文件并算出该记录应有的字段
+  videoRelink: (payload) => ipcRenderer.invoke('video-relink', payload),
+  // 监听绑定目录的变化
+  onVideoLibraryChanged: (callback) => {
+    const fn = (event, data) => callback(data)
+    ipcRenderer.on('video-library-changed', fn)
+    return () => ipcRenderer.removeListener('video-library-changed', fn)
+  }
 })
 
 // 监听来自主进程的消息

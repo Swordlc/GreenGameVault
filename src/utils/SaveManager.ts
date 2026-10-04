@@ -85,6 +85,11 @@ class SaveManager {
         autoOpenScreenshotFolder: false,
         smartWindowDetection: true,
         videoPlayMode: 'external',
+        // 「视频」页绑定文件夹（PotPlayer 收藏目录式；递归扫描其中的视频文件）
+        // 只增键，绝不动老键 —— 见 COMPATIBILITY.md 第五节
+        videoRoots: [],
+        // 「视频」页识别的扩展名；空数组 = 用内置默认清单
+        videoExtensions: [],
         lastView: 'games', // 记录最后访问的页面
         // 各页面的排序方式设置
         sortSettings: {

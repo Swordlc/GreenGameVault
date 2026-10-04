@@ -143,14 +143,15 @@ describe('链路 1 · 最常游玩', () => {
       makeGame({ id: 'count-heavy', playTime: 50 * 3600, playCount: 100 })
     ]
     const scored = scoreChain(games, 'most-played', NOW)
-    const metricOf = (id: string) => scored.find(entry => entry.game.id === id)!.metric
+    // 打分结果已泛型化为 { item, metric, rank }（为视频推荐复用同一套抽样数学）
+    const metricOf = (id: string) => scored.find(entry => entry.item.id === id)!.metric
 
     // time-heavy：时长拉满(1.0) * 0.7 + 次数为 0 = 0.7
     expect(metricOf('time-heavy')).toBeCloseTo(0.7, 6)
     // count-heavy：时长 50% * 0.7 + 次数拉满(1.0) * 0.3 = 0.65
     expect(metricOf('count-heavy')).toBeCloseTo(0.65, 6)
     // 时长权重更高 ⇒ 时长拉满者以微弱优势取胜
-    expect(scored[0].game.id).toBe('time-heavy')
+    expect(scored[0].item.id).toBe('time-heavy')
   })
 
   it('从未玩过（playTime = playCount = 0）的游戏永远不会出现', () => {

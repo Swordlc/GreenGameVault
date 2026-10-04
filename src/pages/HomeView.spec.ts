@@ -140,6 +140,126 @@ describe('主页三条抓阄链路', () => {
   })
 })
 
+describe('主页「游戏 / 视频」胶囊切换', () => {
+  const DAY_MS_LOCAL = 24 * 60 * 60 * 1000
+
+  /** 20 个视频：序号越小 = 看得越多 / 最后打开越近；偶数序号带「合集」标签 */
+  function makeRawVideos(size = 20) {
+    const now = Date.now()
+    return Array.from({ length: size }, (_, i) => ({
+      id: `v${String(i).padStart(2, '0')}`,
+      name: `视频${String(i).padStart(2, '0')}`,
+      fileName: `视频${String(i).padStart(2, '0')}.mkv`,
+      relPath: `子目录/视频${String(i).padStart(2, '0')}.mkv`,
+      author: ['某社团'],
+      tags: i % 2 === 0 ? ['合集'] : ['散片'],
+      watchCount: size - i,
+      visitedSessions: [new Date(now - (i + 1) * DAY_MS_LOCAL).toISOString()],
+      addedDate: new Date(now - 400 * DAY_MS_LOCAL).toISOString()
+    }))
+  }
+
+  /** 页面感知的假 API：games / videos 各喂一份数据，并记录都请求过哪些页面 */
+  function mountHomeBoth(library: any[] = makeRawLibrary(), videos: any[] = makeRawVideos()) {
+    const requested: string[] = []
+    const sqliteGetPageData = vi.fn(async (pageId: string) => {
+      requested.push(pageId)
+      if (pageId === 'videos') return { ok: true, data: videos }
+      return { ok: true, data: library }
+    })
+    ;(window as any).electronAPI = { sqliteGetPageData }
+
+    const wrapper = mount(HomeView, {
+      global: {
+        plugins: [i18n],
+        mocks: { $router: { push: vi.fn(() => Promise.resolve()) } }
+      }
+    })
+    return { wrapper, requested, sqliteGetPageData }
+  }
+
+  async function mounBothLoaded(...args: Parameters<typeof mountHomeBoth>) {
+    const ctx = mountHomeBoth(...args)
+    await flushPromises()
+    return ctx
+  }
+
+  it('默认是游戏模式，胶囊上「游戏」高亮；且**不会**去加载视频库', async () => {
+    const { wrapper, requested } = await mounBothLoaded()
+
+    const buttons = wrapper.findAll('.capsule-btn')
+    expect(buttons).toHaveLength(2)
+    expect(buttons[0].classes()).toContain('is-active')
+    expect(buttons[0].text()).toContain('游戏')
+    expect(rowsOf(wrapper)[0].find('.section-title').text()).toContain('最常游玩')
+
+    // 6000+ 条视频的库不该在游戏模式下白加载
+    expect(requested).toEqual(['games'])
+  })
+
+  it('点「视频」→ 切到视频三链路，并懒加载视频库', async () => {
+    const { wrapper, requested } = await mounBothLoaded()
+
+    await wrapper.findAll('.capsule-btn')[1].trigger('click')
+    await flushPromises()
+
+    expect(requested).toContain('videos')
+    expect(wrapper.findAll('.capsule-btn')[1].classes()).toContain('is-active')
+
+    const rows = rowsOf(wrapper)
+    expect(rows).toHaveLength(3)
+    expect(rows[0].find('.section-title').text()).toContain('最常观看')
+    expect(rows[1].find('.section-title').text()).toContain('最近观看')
+    expect(rows[2].find('.section-title').text()).toContain('久未观看')
+
+    // 视频行的推荐理由是「看过 N 次 / N 天前看过 / N 天没看了」，不能出现游戏口径的「游玩」
+    expect(rows[0].find('.chain-card .resource-status').text()).toMatch(/看过 \d+ 次/)
+    expect(rows[1].find('.chain-card .resource-status').text()).toContain('天前看过')
+    expect(wrapper.text()).not.toContain('天前玩过')
+  })
+
+  it('视频卡片点开 → 带 videoId 跳到视频页', async () => {
+    const { wrapper } = await mounBothLoaded()
+    await wrapper.findAll('.capsule-btn')[1].trigger('click')
+    await flushPromises()
+
+    const push = (wrapper.vm as any).$router.push
+    await rowsOf(wrapper)[0].findAll('.chain-card')[0].trigger('click')
+    await flushPromises()
+
+    expect(push).toHaveBeenCalledWith({ name: 'videos', query: { videoId: 'v00' } })
+  })
+
+  it('模式与两套标签筛选各自记在 localStorage，互不污染', async () => {
+    const { wrapper } = await mounBothLoaded()
+    // 游戏模式先加一个标签筛选
+    await wrapper.vm.onTagFilterUpdate({ selected: [TAG_INCLUDE_SAMPLE], excluded: [] })
+    await flushPromises()
+
+    await wrapper.findAll('.capsule-btn')[1].trigger('click')
+    await flushPromises()
+
+    // 切到视频后不该继承游戏那份筛选（视频库里没有 3D 这个标签）
+    expect((wrapper.vm as any).tagFilter.include).toEqual([])
+    expect(localStorage.getItem('ggv-home-mode')).toBe('video')
+    expect(JSON.parse(localStorage.getItem('ggv-home-tag-filter') as string).include).toEqual([TAG_INCLUDE_SAMPLE])
+
+    // 视频模式下的筛选写到另一个键
+    await wrapper.vm.onTagFilterUpdate({ selected: ['合集'], excluded: [] })
+    await flushPromises()
+    expect(JSON.parse(localStorage.getItem('ggv-home-video-tag-filter') as string).include).toEqual(['合集'])
+    expect(JSON.parse(localStorage.getItem('ggv-home-tag-filter') as string).include).toEqual([TAG_INCLUDE_SAMPLE])
+  })
+
+  it('记住上次模式：localStorage 里是 video 就直接进视频模式', async () => {
+    localStorage.setItem('ggv-home-mode', 'video')
+    const { wrapper } = await mounBothLoaded()
+
+    expect(rowsOf(wrapper)[0].find('.section-title').text()).toContain('最常观看')
+    expect((wrapper.vm as any).isVideoMode).toBe(true)
+  })
+})
+
 describe('主页全局标签筛选', () => {
   it('点击标签设为「包含」，三条链路同时收敛到该标签', async () => {
     const wrapper = await mountLoaded()

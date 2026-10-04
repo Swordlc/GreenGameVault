@@ -1,0 +1,177 @@
+{
+  "id": "videos",
+  "name": "视频",
+  "icon": "🎬",
+  "description": "绑定文件夹后自动收录其中的视频（含子文件夹），只做标签与封面管理",
+  "settingsKey": "video",
+  "defaultPageSize": 30,
+  "defaultSortBy": "name-asc",
+  "resourceTypes": [
+    "Video"
+  ],
+  "displayLayoutConfig": {
+    "minWidth": 120,
+    "maxWidth": 420
+  },
+  "sortOptions": [
+    {
+      "id": "name-asc",
+      "label": "按名称排序",
+      "field": "name",
+      "order": "asc"
+    },
+    {
+      "id": "name-desc",
+      "label": "按名称排序（降序）",
+      "field": "name",
+      "order": "desc"
+    },
+    {
+      "id": "lastOpened-asc",
+      "label": "按最后打开时间",
+      "field": "lastOpened",
+      "order": "asc"
+    },
+    {
+      "id": "lastOpened-desc",
+      "label": "按最后打开时间（降序）",
+      "field": "lastOpened",
+      "order": "desc"
+    },
+    {
+      "id": "watchCount-asc",
+      "label": "按打开次数（升序）",
+      "field": "watchCount",
+      "order": "asc"
+    },
+    {
+      "id": "watchCount-desc",
+      "label": "按打开次数（降序）",
+      "field": "watchCount",
+      "order": "desc"
+    },
+    {
+      "id": "addedDate-asc",
+      "label": "按入库时间",
+      "field": "addedDate",
+      "order": "asc"
+    },
+    {
+      "id": "addedDate-desc",
+      "label": "按入库时间（降序）",
+      "field": "addedDate",
+      "order": "desc"
+    },
+    {
+      "id": "fileSize-asc",
+      "label": "按文件大小（升序）",
+      "field": "fileSize",
+      "order": "asc"
+    },
+    {
+      "id": "fileSize-desc",
+      "label": "按文件大小（降序）",
+      "field": "fileSize",
+      "order": "desc"
+    },
+    {
+      "id": "durationSec-asc",
+      "label": "按时长（升序）",
+      "field": "durationSec",
+      "order": "asc"
+    },
+    {
+      "id": "durationSec-desc",
+      "label": "按时长（降序）",
+      "field": "durationSec",
+      "order": "desc"
+    }
+  ],
+  "emptyStateConfig": {
+    "icon": "🎬",
+    "title": "还没有绑定视频文件夹",
+    "description": "点击「绑定文件夹」后，会自动递归扫描其中的视频文件（含子文件夹）；本页只做标签与封面管理，不会改动你的文件",
+    "buttonText": "绑定文件夹",
+    "buttonAction": "bindVideoFolder"
+  },
+  "toolbarConfig": {
+    "items": [
+      {
+        "type": "button",
+        "label": "绑定文件夹",
+        "action": "bindVideoFolder",
+        "icon": "📁",
+        "buttonType": "primary"
+      },
+      {
+        "type": "button",
+        "label": "重新扫描",
+        "action": "rescanVideoLibrary",
+        "icon": "🔄"
+      },
+      {
+        "type": "search",
+        "placeholder": "搜索视频（文件名/路径/标签，空格分词）",
+        "action": "filterBySearch"
+      },
+      {
+        "type": "multi-select"
+      },
+      {
+        "type": "layout"
+      },
+      {
+        "type": "sort"
+      }
+    ]
+  },
+  "dialogConfig": {
+    "addTitle": "添加视频",
+    "editTitle": "编辑视频信息",
+    "addButtonText": "添加视频",
+    "editButtonText": "保存修改",
+    "enableEngineAutoDetect": false,
+    "enableScreenshotCover": false,
+    "enableRandomizeThumbnail": false
+  },
+  "filterConfig": [
+    {
+      "key": "missing-resources",
+      "title": "丢失的文件",
+      "filterType": "missingResources",
+      "params": {
+        "missingLabel": "丢失的文件"
+      }
+    },
+    {
+      "key": "tags",
+      "title": "标签筛选",
+      "filterType": "resourceField",
+      "params": {
+        "resource": "video",
+        "field": "tags"
+      },
+      "isArray": true
+    },
+    {
+      "key": "authors",
+      "title": "作者筛选",
+      "filterType": "resourceField",
+      "params": {
+        "resource": "video",
+        "field": "author"
+      },
+      "isArray": true
+    },
+    {
+      "key": "extensions",
+      "title": "格式筛选",
+      "filterType": "resourceField",
+      "params": {
+        "resource": "video",
+        "field": "ext"
+      },
+      "isArray": false
+    }
+  ]
+}

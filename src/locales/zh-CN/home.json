@@ -1,10 +1,17 @@
 {
-  "loading": "正在整理你的游戏库…",
+  "loading": "正在整理你的库…",
   "librarySummary": "共 {total} 款游戏，当前筛选出 {filtered} 款",
   "emptyLibrary": "游戏库还是空的，先去「游戏」页添加几款吧",
   "filteredEmptyTitle": "当前标签筛选下没有游戏",
   "filteredEmptyHint": "试试放宽筛选条件，或者直接清空筛选",
   "gameCategory": "游戏",
+
+  "modeGame": "游戏",
+  "modeVideo": "视频",
+  "videoLibrarySummary": "共 {total} 个视频，当前筛选出 {filtered} 个",
+  "videoEmptyLibrary": "视频库还是空的，先去「视频」页绑定一个文件夹吧",
+  "videoFilteredEmptyTitle": "当前标签筛选下没有视频",
+  "videoCategory": "视频",
 
   "reroll": "重新推荐",
   "rerollTitle": "只重刷这一行的随机位（前 3 名固定不变）",
@@ -27,6 +34,25 @@
   "captionDaysAgo": "{days} 天前玩过",
   "captionIdle": "{days} 天没碰了",
   "captionNeverPlayed": "入库 {days} 天 · 一次没开过",
+
+  "videoChainMostWatched": "最常观看",
+  "videoChainMostWatchedHint": "按打开次数排；前 3 名固定，其余按权重抽签",
+  "videoChainRecent": "最近观看",
+  "videoChainRecentHint": "按最后打开时间排；前 3 名固定，其余按权重抽签",
+  "videoChainUpNext": "久未观看",
+  "videoChainUpNextHint": "按空置天数排（没看过的从入库日算起）；前 3 名固定，其余按权重抽签",
+
+  "rowEmptyVideoMostWatched": "还没有看过的视频，先打开几个再来抓阄吧",
+  "rowEmptyVideoRecent": "还没有观看记录",
+  "rowEmptyVideoUpNext": "暂时没有可以推荐的视频",
+
+  "captionVideoMostWatched": "看过 {count} 次",
+  "captionVideoRecent": "最后观看 {time}",
+  "captionVideoNever": "从未观看",
+  "captionVideoToday": "今天看过",
+  "captionVideoDaysAgo": "{days} 天前看过",
+  "captionVideoIdle": "{days} 天没看了",
+  "captionVideoNeverWatched": "入库 {days} 天 · 一次没看过",
 
   "tagFilterTitle": "标签筛选",
   "tagSearchPlaceholder": "搜索标签…",

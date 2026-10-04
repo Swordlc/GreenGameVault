@@ -21,9 +21,21 @@
           ✕ 清除筛选
         </button>
       </div>
+
+      <!-- 条目多的时候给个模糊搜索框（标签/作者动辄几十上百个，翻起来太累） -->
+      <div v-if="needsSearchBox(filter)" class="filter-search">
+        <input
+          v-model="searchQueries[filter.key]"
+          class="filter-search-input"
+          type="text"
+          :placeholder="`筛选${filter.title.replace('筛选', '')}…（空格分词）`"
+        >
+        <span v-if="searchQueries[filter.key]" class="filter-search-clear" @click="clearSearch(filter.key)">✕</span>
+      </div>
+
       <div class="filter-list">
         <div 
-          v-for="item in filter.items" 
+          v-for="item in visibleItems(filter)" 
           :key="item.name"
           class="filter-item"
           :class="{ 
@@ -41,6 +53,9 @@
         <div v-if="filter.items.length === 0" class="no-filters">
           暂无{{ filter.title.replace('筛选', '') }}
         </div>
+        <div v-else-if="visibleItems(filter).length === 0" class="no-filters">
+          没有匹配的{{ filter.title.replace('筛选', '') }}
+        </div>
       </div>
     </div>
     
@@ -56,6 +71,10 @@
 import disguiseManager from '../utils/DisguiseManager'
 import { isDisguiseModeEnabled } from '../utils/disguiseMode'
 import FunLoading from '../fun-ui/feedback/Loading/FunLoading.vue'
+import { matchesFuzzy } from '../utils/fuzzySearch'
+
+/** 条目超过这个数量才给搜索框（少量条目没必要占地方） */
+const SEARCH_BOX_THRESHOLD = 8
 
 export default {
   name: 'FilterSidebar',
@@ -86,10 +105,32 @@ export default {
   data() {
     return {
       disguiseModeState: false, // 伪装模式状态
-      disguiseNameCache: {} // 伪装名称缓存
+      disguiseNameCache: {}, // 伪装名称缓存
+      // 每个筛选器分区各自的搜索词（key → 关键词）
+      searchQueries: {}
     }
   },
   methods: {
+    /** 条目够多才需要搜索框 */
+    needsSearchBox(filter) {
+      return Array.isArray(filter?.items) && filter.items.length > SEARCH_BOX_THRESHOLD
+    },
+    /**
+     * 分区内做模糊筛选：
+     *  - 命中规则与页面搜索一致（空格分词 / 忽略分隔符 / 子序列）
+     *  - **已选中/已排除的条目永远显示**，否则筛完之后想取消都找不到它
+     */
+    visibleItems(filter) {
+      const query = String(this.searchQueries[filter.key] || '').trim()
+      const items = Array.isArray(filter?.items) ? filter.items : []
+      if (!query) return items
+
+      const pinned = new Set([...(filter.selected || []), ...(filter.excluded || [])])
+      return items.filter(item => pinned.has(item.name) || matchesFuzzy([String(item.name)], query))
+    },
+    clearSearch(filterKey) {
+      this.searchQueries = { ...this.searchQueries, [filterKey]: '' }
+    },
     selectFilter(filterKey, itemName) {
       console.log('FilterSidebar selectFilter:', filterKey, itemName)
       this.$emit('filter-select', { filterKey, itemName })
@@ -231,6 +272,41 @@ export default {
 
 .btn-clear-filter:hover {
   background: var(--accent-hover);
+}
+
+/* 分区内的模糊搜索框（条目多时才出现） */
+.filter-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 0 20px 8px 20px;
+}
+
+.filter-search-input {
+  width: 100%;
+  padding: 5px 24px 5px 8px;
+  font-size: 0.8rem;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.filter-search-input:focus {
+  outline: none;
+  border-color: var(--accent-color);
+}
+
+.filter-search-clear {
+  position: absolute;
+  right: 28px;
+  cursor: pointer;
+  color: var(--text-tertiary);
+  font-size: 0.75rem;
+}
+
+.filter-search-clear:hover {
+  color: var(--text-primary);
 }
 
 .filter-list {

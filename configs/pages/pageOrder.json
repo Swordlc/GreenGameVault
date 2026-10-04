@@ -4,5 +4,11 @@
     "fileName": "gamePage.json",
     "order": 1,
     "isHidden": false
+  },
+  {
+    "isDefault": true,
+    "fileName": "videoPage.json",
+    "order": 2,
+    "isHidden": false
   }
 ]

@@ -290,7 +290,7 @@ export default {
     type: {
       type: String,
       required: true,
-      validator: value => ['game'].includes(value)
+      validator: value => ['game', 'video'].includes(value)
     },
     isRunning: {
       type: Boolean,
@@ -592,9 +592,10 @@ export default {
     showFileError() {
       // 优先使用 item.fileExists（如果存在），否则使用 prop 的 fileExists
       // 这样可以避免 prop 默认值导致的误判
+      // game 与 video 都以「本地文件是否还在」为硬事实，需要在卡片上给个 ⚠️
       const itemFileExists = getFieldValue(this.item?.fileExists)
       const fileExistsValue = itemFileExists !== undefined ? itemFileExists : this.fileExists
-      const shouldShow = this.type === 'game' && fileExistsValue === false
+      const shouldShow = (this.type === 'game' || this.type === 'video') && fileExistsValue === false
       return shouldShow
     },
     isArchive() {
@@ -710,6 +711,18 @@ export default {
     },
     itemSeries() {
       return getFieldValue(this.item.series)
+    },
+    /**
+     * 封面版本号（视频页每次抽帧/删封面都会变）。
+     * 封面是固定文件名覆盖写的，路径不变 → 只能靠这个字段发现「图换了」。
+     */
+    coverRevision() {
+      return getFieldValue(this.item?.coverUpdatedAt) || 0
+    },
+    /** 当前封面路径（缓存失效时要用） */
+    currentCoverKey() {
+      const coverPath = getFieldValue(this.item?.coverPath)
+      return typeof coverPath === 'string' && coverPath ? coverPath : ''
     }
   },
   methods: {
@@ -719,6 +732,18 @@ export default {
       } else {
         this.$emit('click', this.item)
       }
+    },
+    /**
+     * 丢掉当前封面的图片缓存（重新抽帧/删封面后调用）。
+     * imageCache 是响应式的，删掉键会触发重渲染 → resolveImage 重新读一次文件。
+     */
+    invalidateCoverCache() {
+      const key = this.currentCoverKey
+      if (key && this.imageCache && this.imageCache[key]) {
+        delete this.imageCache[key]
+      }
+      // 没有封面时（删除封面后走默认图）也要刷一遍显示
+      this.screenshotCoverPath = null
     },
     // 获取特殊项的值
     getSpecialItemValue(specialItem) {
@@ -753,6 +778,23 @@ export default {
       const texts = getDisplayTexts(this.item)
       if (!dateString) return texts.neverAccessed
       return formatLastPlayed(dateString, texts)
+    },
+    // ===== 视频页专用的展示口径 =====
+    /** 打开次数（视频语境用「观看」，不是「游玩」） */
+    formatWatchCount(count) {
+      const value = Number(count) || 0
+      if (value <= 0) return '未观看'
+      return `观看 ${value} 次`
+    },
+    /** 最后打开时间（走资源类自己的 getDisplayTexts，Video 会返回「从未观看」） */
+    formatLastOpened(dateString) {
+      const texts = getDisplayTexts(this.item)
+      if (!dateString) return texts.neverAccessed
+      return formatLastPlayed(dateString, texts)
+    },
+    /** 视频时长（秒 → 人话） */
+    formatVideoLength(seconds) {
+      return formatDuration(seconds, '未知时长')
     },
     formatReadTime(minutes) {
       if (!minutes) return '未阅读'
@@ -1309,6 +1351,13 @@ export default {
     }
   },
   watch: {
+    // 封面被重刷（同一路径、内容换了）→ 丢掉这张图的缓存，否则永远显示旧图
+    // （主人 2026-10-04 报的「重刷无效 / 删除后重刷还是第一张」）
+    coverRevision: {
+      handler() {
+        this.invalidateCoverCache()
+      }
+    },
     // 监听 isRunning 变化，动态启动/停止定时器
     isRunning(newVal) {
       const config = getCardDisplayConfig(this.item)

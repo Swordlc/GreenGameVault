@@ -192,6 +192,34 @@ function createMainWindow(isDev, getMinimizeToTrayEnabled, getSystemTray, displa
       }
     }
   })
+
+  // 开发环境：把渲染进程的 console 转发到终端。
+  // 否则渲染层的报错只出现在 DevTools 里，跑 `npm run electron-dev` 的人（尤其是 agent）完全看不到。
+  if (isDev) {
+    const levelNames = ['log', 'info', 'warn', 'error', 'debug']
+    const canWriteStdout = () => {
+      try {
+        return !!(process.stdout && !process.stdout.destroyed && process.stdout.writable)
+      } catch (_) {
+        return false
+      }
+    }
+    mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
+      // 转发只是「顺便帮忙」，绝不能因为它把主进程搞崩：
+      // 父进程的 stdout 管道一旦关闭（EPIPE），console.log 会直接抛异常
+      if (!canWriteStdout()) return
+      try {
+        const text = String(message ?? '')
+        // DevTools 自身的协议噪音不值得转发
+        if (text.includes('Autofill.enable') || text.includes('DevTools')) return
+        const levelName = levelNames[level] || `level${level}`
+        const source = sourceId ? String(sourceId).split(/[\\/]/).pop() : ''
+        console.log(`[renderer:${levelName}] ${text}${source ? `  (${source}:${line})` : ''}`)
+      } catch (_) {
+        // 忽略：日志转发失败不影响应用
+      }
+    })
+  }
   
   // 检查 electronAPI 是否已加载（用于调试）
   mainWindow.webContents.once('did-finish-load', () => {

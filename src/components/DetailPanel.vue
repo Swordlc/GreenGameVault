@@ -125,6 +125,10 @@
 </template>
 
 <script>
+// 详情页左侧封面：相对 SaveData 的路径要先经主进程拼成绝对路径，再读成 data:URL
+// （做法与 MediaCard 保持一致，见 resolveImage 的注释）
+import coverManager from '../utils/CoverManager.ts'
+
 export default {
   name: 'DetailPanel',
   props: {
@@ -163,13 +167,25 @@ export default {
   data() {
     return {
       // 已展开的「可折叠客观信息」字段名（如 developers）。默认全部折叠。
-      expandedInfoFields: {}
+      expandedInfoFields: {},
+      // 相对 SaveData 的封面（games/covers/x.png、videos/covers/x.jpg）→ 可直接显示的 data:/file: URL
+      imageCache: {},
+      // 正在解析中的相对路径（防止同一张图并发请求多次）
+      resolvingImages: {}
     }
   },
   watch: {
     // 换一个资源就恢复默认折叠状态，避免上次的展开状态串到下一个游戏
     item() {
       this.expandedInfoFields = {}
+    },
+    // 封面被重刷（视频页是固定文件名覆盖写）→ 丢掉缓存，否则左侧一直显示旧图
+    // ⚠️ 必须监听 computed（返回原始值）：直接写 'item.coverUpdatedAt' 监听的是
+    //    ResourceField **对象身份**，而抽帧只改它的 .value，watcher 根本不会触发。
+    coverRevision: {
+      handler() {
+        this.invalidateCoverCache()
+      }
     }
   },
   computed: {
@@ -189,6 +205,14 @@ export default {
       // 从资源的构造函数获取配置
       const ResourceClass = this.item.constructor
       return ResourceClass?.detailPanelConfig || null
+    },
+    /**
+     * 封面版本号（视频每次抽帧/删封面都会变）。
+     * 必须是**原始值**的 computed，watcher 才真的会触发 —— 见 watch.coverRevision 的注释。
+     */
+    coverRevision() {
+      const raw = this.item?.coverUpdatedAt
+      return Number(raw?.value ?? raw ?? 0) || 0
     },
     // 根据配置生成主标题
     computedTitle() {
@@ -521,55 +545,105 @@ export default {
       const archiveExtensions = ['.zip', '.rar', '.7z', '.tar', '.gz', '.tar.gz', '.bz2', '.tar.bz2', '.xz', '.tar.xz']
       return archiveExtensions.some(ext => fileName.endsWith(ext))
     },
+    /**
+     * 详情页左侧封面图的解析
+     *
+     * 历史 bug（2026-10-04 主人指出「左侧截图位置始终为空」，游戏页同样中招）：
+     * 旧实现把**相对 SaveData 的**封面路径直接拼成 `file://games/covers/x.png` ——
+     * 这既没有盘符也不是合法的 file URL，必然加载失败；`@error` 又回退到并不存在的
+     * `./default-image.png`，于是左侧永远是一块空白。
+     *
+     * 现在的规则：
+     *   1. 已经是 data:/http(s)/file:/archive: → 直接用
+     *   2. 绝对磁盘路径（D:\…）→ 转 file:/// 并用
+     *   3. 相对 SaveData 的路径 → 交给主进程拼出完整路径，再读成 data:URL
+     *      （http(s) 源下直接加载 file:// 会被拦，这跟 MediaCard 是同一套做法）
+     *   4. 空值 → 资源类自己的默认图标
+     */
     resolveImage(imagePath) {
-      // 如果传入的是 ResourceField 对象，提取其 value
       if (imagePath?.value !== undefined) {
         imagePath = imagePath.value
       }
-      
-      // 获取配置（只获取一次）
+
       const config = this.detailPanelConfig
-      
-      // 空值返回默认图片（从配置中读取，如果没有配置使用通用默认图片）
+
+      // 空值返回默认图片
       if (!imagePath || (typeof imagePath === 'string' && imagePath.trim() === '')) {
-        return config?.defaultImage || './default-image.png'
+        return this.defaultImage()
       }
-      
-      // 网络资源直接返回
-      if (typeof imagePath === 'string' && (imagePath.startsWith('http://') || imagePath.startsWith('https://'))) {
-        return imagePath
+
+      const pathText = String(imagePath)
+
+      // 已经是可直接显示的 URL
+      if (/^(https?:|data:|file:|archive:)/i.test(pathText)) {
+        return pathText
       }
-      
-      // 已是 data: 或 file: 直接返回
-      if (typeof imagePath === 'string' && (imagePath.startsWith('data:') || imagePath.startsWith('file:'))) {
-        return imagePath
+
+      // 绝对磁盘路径（Windows：D:\… / D:/…）
+      if (/^[A-Za-z]:[\\/]/.test(pathText)) {
+        return this.toFileUrl(pathText)
       }
-      
-      // 对于视频缩略图，从配置中判断是否需要特殊处理
-      if (config?.useVideoThumbnail === true) {
-        return this.resolveVideoThumbnail(imagePath)
+
+      // 相对 SaveData 的路径 → 必须异步解析成 data:URL
+      if (this.imageCache[pathText]) {
+        return this.imageCache[pathText]
       }
-      
-      // 回退：尝试 file://，正确处理中文路径
+      this.loadRelativeImage(pathText)
+      return this.defaultImage()
+    },
+    /** 丢掉当前封面的缓存（重刷/删除封面后调用），让 resolveImage 重新读一次 */
+    invalidateCoverCache() {
+      const coverPath = this.item?.coverPath?.value ?? this.item?.coverPath
+      if (typeof coverPath === 'string' && coverPath && this.imageCache) {
+        delete this.imageCache[coverPath]
+      } else if (this.imageCache) {
+        // 封面被删掉了：整份缓存清掉最省事（详情页至多几张大图）
+        this.imageCache = {}
+      }
+    },
+    /** 资源类自己的默认图标优先（Game → default-game.png，Video → default-video.png） */
+    defaultImage() {
       try {
-        // 将反斜杠转换为正斜杠，并确保路径以 / 开头（Windows 盘符处理）
+        const fromClass = this.item?.constructor?.getDefaultIcon?.()
+        if (fromClass) return fromClass
+      } catch (_) {
+        // 忽略
+      }
+      return this.detailPanelConfig?.defaultImage || './default-game.png'
+    },
+    /** 把磁盘绝对路径转成可用的 file:// URL（正确处理中文与空格） */
+    toFileUrl(imagePath) {
+      try {
         const normalized = String(imagePath).replace(/\\/g, '/').replace(/^([A-Za-z]:)/, '/$1')
-        
-        // 对路径进行编码，处理中文和特殊字符
         const encoded = normalized.split('/').map(seg => {
-          if (seg.includes(':')) {
-            // 处理 Windows 盘符（如 C:）
-            return seg
-          }
+          if (seg.includes(':')) return seg
           return encodeURIComponent(seg)
         }).join('/')
-        
         return `file://${encoded}`
       } catch (error) {
         console.error('构建文件URL失败:', error)
-        // 降级处理：简单拼接
-        const normalizedPath = String(imagePath).replace(/\\/g, '/')
-        return `file:///${normalizedPath}`
+        return `file:///${String(imagePath).replace(/\\/g, '/')}`
+      }
+    },
+    /** 异步把「相对 SaveData 的封面路径」读成 data:URL 并缓存 */
+    async loadRelativeImage(relPath) {      if (this.resolvingImages[relPath]) return
+      this.resolvingImages[relPath] = true
+      try {
+        let resolved = ''
+        if (window.electronAPI?.getCoverFullPath) {
+          resolved = await coverManager.getCoverUrl(relPath)
+        }
+        let url = resolved || relPath
+        // http(s) 源下 file:// 会被拦，统一读成 data:URL
+        if (!/^(data:|https?:)/i.test(url) && window.electronAPI?.readFileAsDataUrl) {
+          const dataUrl = await window.electronAPI.readFileAsDataUrl(url)
+          if (dataUrl) url = dataUrl
+        }
+        this.imageCache[relPath] = url
+      } catch (error) {
+        console.warn('[DetailPanel] 解析封面路径失败:', relPath, error)
+      } finally {
+        delete this.resolvingImages[relPath]
       }
     },
     resolveVideoThumbnail(thumbnail) {
@@ -602,9 +676,12 @@ export default {
       return thumbnail
     },
     handleImageError(event) {
-      // 从配置中读取默认图片，如果没有配置使用通用默认图片
-      const config = this.detailPanelConfig
-      event.target.src = config?.defaultImage || './default-image.png'
+      // 默认图本身也可能不存在：加个标记，避免「坏图 → 设默认 → 又坏 → 再设」的死循环
+      const target = event?.target
+      if (!target) return
+      if (target.dataset && target.dataset.fallbackApplied === '1') return
+      if (target.dataset) target.dataset.fallbackApplied = '1'
+      target.src = this.defaultImage()
     },
     formatDate(date) {
       if (!date) return '未知'
@@ -639,6 +716,49 @@ export default {
         return '未知'
       }
     },
+    // ===== 视频页专用的展示口径（视频不计时，只统计打开次数）=====
+    /** 最后打开时间（视频语境：从未观看） */
+    formatLastOpened(date) {
+      if (!date) return '从未观看'
+      try {
+        return new Date(date).toLocaleDateString('zh-CN')
+      } catch {
+        return '未知'
+      }
+    },
+    /** 第一次打开时间（视频语境：从未观看） */
+    formatFirstOpened(date) {
+      if (!date) return '从未观看'
+      try {
+        return new Date(date).toLocaleDateString('zh-CN')
+      } catch {
+        return '未知'
+      }
+    },
+    /** 视频时长（秒 → 人话） */
+    formatVideoLength(seconds) {
+      const total = Number(seconds) || 0
+      if (total <= 0) return '未知'
+      const hours = Math.floor(total / 3600)
+      const minutes = Math.floor((total % 3600) / 60)
+      const secs = Math.floor(total % 60)
+      if (hours > 0) return `${hours} 小时 ${minutes} 分钟`
+      if (minutes > 0) return `${minutes} 分 ${secs} 秒`
+      return `${secs} 秒`
+    },
+    /** 文件大小（字节 → 人话） */
+    formatFolderSize(bytes) {
+      const size = Number(bytes) || 0
+      if (size <= 0) return '未知'
+      const units = ['B', 'KB', 'MB', 'GB', 'TB']
+      let value = size
+      let index = 0
+      while (value >= 1024 && index < units.length - 1) {
+        value /= 1024
+        index++
+      }
+      return `${Math.round(value * 100) / 100} ${units[index]}`
+    },
     /**
      * 从 item 中获取字段值（支持 ResourceField 和普通值）
      */
@@ -658,7 +778,12 @@ export default {
         formatPlayTime: this.formatPlayTime,
         formatLastPlayed: this.formatLastPlayed,
         formatFirstPlayed: this.formatFirstPlayed,
-        formatDate: this.formatDate
+        formatDate: this.formatDate,
+        // 视频页
+        formatLastOpened: this.formatLastOpened,
+        formatFirstOpened: this.formatFirstOpened,
+        formatVideoLength: this.formatVideoLength,
+        formatFolderSize: this.formatFolderSize
       }
       
       const formatter = formatters[formatterName]
@@ -1143,6 +1268,67 @@ export default {
 
 .btn-open:hover {
   background: var(--accent-hover);
+}
+
+/* 视频页：「随机抽帧设为封面」/「删除封面」
+   必须自带样式 —— 之前配置里写的 btn-cover / btn-remove-cover 没有对应 CSS，
+   两个按钮就退化成了浏览器默认外观（主人 2026-10-04 指出的「没有设置样式」）。 */
+.btn-cover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  padding: 12px 20px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.3s ease;
+}
+
+.btn-cover:hover {
+  background: var(--bg-secondary);
+  border-color: var(--accent-color);
+}
+
+.btn-remove-cover {
+  background: var(--bg-tertiary);
+  color: #ef4444;
+  border: 1px solid var(--border-color);
+  padding: 12px 20px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.3s ease;
+}
+
+.btn-remove-cover:hover {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: #ef4444;
+}
+
+/* 视频页：「重新关联到…」（文件改名/挪走后手动指认） */
+.btn-relink {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  padding: 12px 20px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.3s ease;
+}
+
+.btn-relink:hover {
+  background: var(--bg-secondary);
+  border-color: var(--accent-color);
 }
 
 .btn-update-duration {

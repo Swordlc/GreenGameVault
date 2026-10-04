@@ -237,18 +237,22 @@ function registerIpcHandlers(ipcMain, getMainWindow, dialog) {
     }
   })
 
-  // 选择视频文件
-  ipcMain.handle('select-video-file', async () => {
+  // 选择视频文件（可选 defaultPath：打开对话框时定位到某个目录，供「重新关联到…」用）
+  ipcMain.handle('select-video-file', async (event, defaultPath) => {
     try {
       const mainWindow = getMainWindow()
-      const result = await dialog.showOpenDialog(mainWindow, {
+      const options = {
         title: '选择视频文件',
         filters: [
-          { name: '视频文件', extensions: ['mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm', 'm4v'] },
+          { name: '视频文件', extensions: ['mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm', 'm4v', 'ts', 'm2ts', 'rmvb', 'rm', 'vob', 'ogv', 'asf', '3gp'] },
           { name: '所有文件', extensions: ['*'] }
         ],
         properties: ['openFile']
-      })
+      }
+      if (defaultPath && typeof defaultPath === 'string') {
+        options.defaultPath = defaultPath
+      }
+      const result = await dialog.showOpenDialog(mainWindow, options)
 
       if (!result.canceled && result.filePaths.length > 0) {
         return result.filePaths[0]

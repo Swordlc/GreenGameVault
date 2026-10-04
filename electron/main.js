@@ -18,6 +18,7 @@ const appMenu = require('./menu/app-menu')
 const gameProcess = require('./services/game-process')
 const screenshot = require('./services/screenshot')
 const shortcuts = require('./services/shortcuts')
+const videoLibrary = require('./services/video-library')
 // 引入 IPC 处理器模块
 const dialogHandlers = require('./ipc/dialog-handlers')
 const fileHandlers = require('./ipc/file-handlers')
@@ -34,6 +35,26 @@ const sqlite = require('./database/sqlite')
 
 // 判断是否为开发环境
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
+
+/**
+ * 🩹 日志管道断了不该让应用崩。
+ *
+ * 现象（2026-10-04 实锤）：从「会在中途关闭 stdout 的父进程」启动时
+ * （例如把 `npm run electron-dev` 的输出接给 `Select-String -First N`，
+ * 读够 N 行后 PowerShell 就关掉了管道），此后主进程里任何一次 console.log
+ * 都会抛 `Error: EPIPE: broken pipe, write`，Electron 直接弹
+ * 「A JavaScript error occurred in the main process」把应用打断。
+ *
+ * 写日志失败属于「无伤大雅」的故障，吞掉即可 —— 应用该继续跑。
+ */
+for (const stream of [process.stdout, process.stderr]) {
+  if (stream && typeof stream.on === 'function') {
+    stream.on('error', error => {
+      // EPIPE / ERR_STREAM_DESTROYED：管道那头没了，静默忽略
+      void error
+    })
+  }
+}
 
 const disableGpu = process.env.ELECTRON_DISABLE_GPU === '1' || process.env.GRM_DISABLE_GPU === '1'
 if (disableGpu) {
@@ -191,6 +212,12 @@ if (!gotTheLock) {
     // 注册媒体相关的 IPC 处理器
     mediaHandlers.registerIpcHandlers(ipcMain, shell, pathUtils)
     
+    // 注册「视频」页相关的 IPC 处理器（绑定目录扫描 / 实时监听 / 抽帧封面 / 打开次数）
+    videoLibrary.registerIpcHandlers(ipcMain, shell, () => {
+      const win = mainWindowModule.getMainWindow()
+      return win && !win.isDestroyed() ? win.webContents : null
+    })
+    
     // SQLite demo 数据查询（供「数据库」页面展示）
     ipcMain.handle('sqlite-get-all-tables-data', () => sqlite.getAllTablesData())
     
@@ -301,6 +328,8 @@ if (!gotTheLock) {
 
 // 当所有窗口都被关闭时退出应用
 app.on('window-all-closed', () => {
+  // 视频库的目录监听要跟着进程一起收摊
+  videoLibrary.stopWatch()
   // 在 macOS 上，除非用户用 Cmd + Q 确定地退出，
   // 否则绝大部分应用及其菜单栏会保持激活
   if (process.platform !== 'darwin') {
