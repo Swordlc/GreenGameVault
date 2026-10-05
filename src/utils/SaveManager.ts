@@ -90,7 +90,10 @@ class SaveManager {
         videoRoots: [],
         // 「视频」页识别的扩展名；空数组 = 用内置默认清单
         videoExtensions: [],
-        lastView: 'games', // 记录最后访问的页面
+        // ⚠️ 已废弃（1.4.3 起）：启动固定进主页，不再恢复「上次访问的页面」。
+        // 保留键位只为不动老配置（COMPATIBILITY.md 第五节：只增键，绝不动老键），
+        // 现在没有任何代码读它。
+        lastView: 'home',
         // 各页面的排序方式设置
         sortSettings: {
           games: 'name',

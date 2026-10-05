@@ -1003,35 +1003,7 @@ export default {
         this.hasTabs = false
       }
     },
-    async saveCurrentView(viewId: string) {
-      try {
-        const settings = await saveManager.loadSettings()
-        if (settings) {
-          settings.lastView = viewId
-          await saveManager.saveSettings(settings)
-          console.log('✅ 已保存最后访问页面:', viewId)
-        }
-      } catch (error) {
-        console.warn('保存最后访问页面失败:', error)
-      }
-    },
-    async loadLastView() {
-      try {
-        const settings = await saveManager.loadSettings()
-        if (settings && settings.lastView) {
-          // 验证页面ID是否有效（从配置中获取所有有效的视图ID）
-          const validViews = Object.keys(this.viewConfig)
-          if (validViews.includes(settings.lastView)) {
-            console.log('✅ 加载最后访问页面:', settings.lastView)
-            return settings.lastView
-          }
-        }
-      } catch (error) {
-        console.warn('加载最后访问页面失败:', error)
-      }
-      return 'home' // 默认返回主页
-    },
-    
+
     // 加载安全键设置
     async loadSafetyKeySettings() {
       try {
@@ -1213,19 +1185,15 @@ export default {
       console.error('❌ 页面配置加载失败:', error)
     }
 
-    // 加载最后访问的页面
-    try {
-      const lastView = await this.loadLastView()
-      // 安全地导航到最后访问的页面
-      this.$router.push({ name: lastView }).catch(() => {
-        // 如果路由不存在，跳转到主页
-        this.$router.push({ name: 'home' })
-      })
-      console.log('🎯 已设置当前页面为:', lastView)
-    } catch (error) {
-      console.warn('加载最后访问页面失败，使用默认页面:', error)
-      this.$router.push({ name: 'home' })
-    }
+    // 🏠 启动固定落在主页。
+    // 🔴 2026-10-05 主人要求：「默认打开进入的页面调回主页」。
+    // 之前这里会恢复 settings.lastView，于是在视频页待过之后，
+    // 每次启动都直接跳进视频页（主人的库里 lastView 就是 'videos'）。
+    // 现在**不再恢复上次页面**，路由一跳转就固定进主页。
+    this.$router.push({ name: 'home' }).catch((error: any) => {
+      console.warn('跳转主页失败:', error)
+    })
+    console.log('🏠 启动页面：主页（不再恢复上次访问的页面）')
 
     // 监听路由变化，更新筛选器状态
     this.$watch(
@@ -1237,8 +1205,8 @@ export default {
           this.resetFilterData()
           this.isFilterSidebarLoading = requiresFilter
           
-          // 保存当前页面
-          this.saveCurrentView(route.name as string)
+          // ⚠️ 不再记录 lastView：启动固定进主页（2026-10-05 主人要求），
+          // 记录它只会在设置库里留一个永远没人读的死键。
           
           // 如果当前在资源页面，自动展开主页菜单
           const isResourcePage = this.resourcePages.some(page => route.name === page.id)

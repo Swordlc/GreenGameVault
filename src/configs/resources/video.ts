@@ -203,6 +203,30 @@ export class Video extends BaseResources {
 		return index > 0 ? rel.slice(0, index) : ''
 	}
 
+	/**
+	 * `potPlayerStats` 的「IPC 安全」快照（纯对象）。
+	 *
+	 * 🔴 为什么必须拷一份：Video 实例一旦被 `ref()` / `reactive()` 深度代理
+	 * （页面里的 `items` 就是），`this.potPlayerStats.value` 拿到的是 **Proxy**。
+	 * 而 `ipcRenderer.invoke` 走的是 V8 结构化克隆，它**不支持 Proxy**，
+	 * 会直接抛 `An object could not be cloned.`（DataCloneError）。
+	 *
+	 * 主人 2026-10-05 报的「视频页任何修改都保存失败」就是这个：
+	 * 视频页里**只有 `potPlayerStats` 是对象字段**，其余全是字符串/数字/
+	 * 字符串数组（`[...proxyArray]` 会退化成纯数组，所以没事），
+	 * 所以只有视频页炸、游戏页正常。JSON 往返是最省事的「拆 Proxy」办法，
+	 * 顺带保证落库的永远是纯 JSON。
+	 */
+	private getPotPlayerStatsSnapshot(): Record<string, any> | null {
+		const stats = this.potPlayerStats.value
+		if (!stats || typeof stats !== 'object') return null
+		try {
+			return JSON.parse(JSON.stringify(stats))
+		} catch {
+			return null
+		}
+	}
+
 	getSaveData(): any {
 		const idValue = this.id.value || this.generateId()
 		return {
@@ -221,7 +245,7 @@ export class Video extends BaseResources {
 			watchCount: this.watchCount.value || 0,
 			visitedSessions: Array.isArray(this.visitedSessions.value) ? [...this.visitedSessions.value] : [],
 			lastAccessSeenMs: this.lastAccessSeenMs.value || 0,
-			potPlayerStats: this.potPlayerStats.value || null,
+			potPlayerStats: this.getPotPlayerStatsSnapshot(),
 			coverPath: this.coverPath.value || '',
 			lastFrameTime: this.lastFrameTime.value || 0,
 			coverUpdatedAt: this.coverUpdatedAt.value || 0,
