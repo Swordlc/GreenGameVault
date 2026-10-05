@@ -682,6 +682,87 @@ function resolveRelinkTarget(roots, filePath) {
   }
 }
 
+/**
+ * 批量重新关联（整夹重连）：用户指认「丢失的文件夹现在在哪」，
+ * 其余文件按**内层相对路径**一一对号入座。
+ *
+ * 场景（主人 2026-10-05）：把 `合集A` 整个改名成 `合集A2`，
+ * 里面 231 个视频的记录全变成「丢失」。逐个指认要 231 次，
+ * 所以给一个"重新关联到…（这个文件夹）"：挑一次新目录，整夹一起接回来。
+ *
+ * 对号入座规则（**不猜内容，只按路径**）：
+ *   1. 首选 `<新文件夹>/<内层相对路径>`（内层相对路径 = 旧路径去掉"丢失文件夹"那一段）；
+ *   2. 首选不存在时，退一步试 `<新文件夹>/<文件名>`（用户把里面的文件摊平放到新夹时用得上）；
+ *   3. 两者都不存在 → 该条报 not-found，留给用户单独处理。
+ *
+ * @param {string[]} roots 绑定根目录
+ * @param {string} folderPath 用户选的新文件夹绝对路径
+ * @param {Array<{id: string, innerRel: string, fileName?: string}>} entries
+ * @returns {{ok: boolean, folderPath?: string, error?: string, results?: Array<object>}}
+ */
+function resolveRelinkFolderBatch(roots, folderPath, entries) {
+  if (!folderPath || typeof folderPath !== 'string' || folderPath.trim() === '') {
+    return { ok: false, error: '没有选择文件夹' }
+  }
+
+  const picked = path.resolve(folderPath)
+  let stat
+  try {
+    stat = fs.statSync(picked)
+  } catch (_) {
+    return { ok: false, error: '文件夹不存在或无法访问' }
+  }
+  if (!stat.isDirectory()) {
+    return { ok: false, error: '选择的不是一个文件夹' }
+  }
+
+  const list = Array.isArray(entries) ? entries : []
+  const results = list.map(entry => {
+    const id = entry && entry.id ? String(entry.id) : ''
+    const innerRel = String((entry && entry.innerRel) || '').replace(/\\/g, '/')
+    const fileName = String((entry && entry.fileName) || '')
+
+    if (!id) return { id, ok: false, reason: 'bad-entry', message: '缺少记录 ID' }
+    if (!innerRel || innerRel.split('/').some(seg => seg === '..' || seg === '')) {
+      return { id, ok: false, reason: 'bad-relative-path', message: '内层相对路径不合法' }
+    }
+
+    const candidates = [path.join(picked, ...innerRel.split('/'))]
+    if (fileName) {
+      const fallback = path.join(picked, fileName)
+      if (!candidates.includes(fallback)) candidates.push(fallback)
+    }
+
+    for (let index = 0; index < candidates.length; index++) {
+      const resolved = resolveRelinkTarget(roots, candidates[index])
+      if (resolved.ok) {
+        return {
+          id,
+          ok: true,
+          usedFallback: index > 0,
+          path: candidates[index],
+          rootPath: resolved.rootPath,
+          relPath: resolved.relPath,
+          fileName: resolved.fileName,
+          name: resolved.name,
+          size: resolved.size,
+          atimeMs: resolved.atimeMs
+        }
+      }
+    }
+
+    return {
+      id,
+      ok: false,
+      reason: 'not-found',
+      message: `在新文件夹里找不到对应的文件：${innerRel}`,
+      expected: candidates[0]
+    }
+  })
+
+  return { ok: true, folderPath: picked, results }
+}
+
 module.exports = {
   DEFAULT_VIDEO_EXTENSIONS,
   FRAME_RATIO_MIN,
@@ -693,6 +774,7 @@ module.exports = {
   scanSingleRoot,
   scanVideoRoots,
   resolveRelinkTarget,
+  resolveRelinkFolderBatch,
   findFfmpeg,
   probeDuration,
   grabRandomFrame,

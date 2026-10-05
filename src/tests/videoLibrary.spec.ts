@@ -85,7 +85,7 @@ describe('视频库 · 层级浏览', () => {
     expect(lib.folderCards.value[0].count).toBe(3) // 合集A 下 2 个 + 子目录 1 个
   })
 
-  it('文件夹卡片带上「直接子级视频标签的并集」（不含更深一层）', () => {
+  it('文件夹卡片带上「子树视频标签的并集」（含更深层级，2026-10-05 改口径）', () => {
     const items = ref<any[]>([
       makeItem('v1', ROOT_A, '合集A/01.mkv', { tags: field(['3D作品', '收藏']) }),
       makeItem('v2', ROOT_A, '合集A/02.mkv', { tags: field(['2D作品']) }),
@@ -101,14 +101,39 @@ describe('视频库 · 层级浏览', () => {
     })
     lib.roots.value = [ROOT_A]
 
-    // 「全部」层的根卡片：只取直接散在根目录下的视频标签
-    expect(lib.folderCards.value[0].tags).toEqual(['根标签'])
+    // 「全部」层的根卡片：整棵根目录树的标签并集
+    expect(lib.folderCards.value[0].tags).toEqual(
+      ['2D作品', '3D作品', '深层标签', '根标签', '收藏'].sort((a, b) => a.localeCompare(b, 'zh-CN'))
+    )
 
-    // 进入根目录 → 合集A 卡片的标签并集 = 它直接包含的两个视频的并集
+    // 进入根目录 → 合集A 卡片 = 它整棵子树的并集（含 深层B）
     lib.currentRoot.value = ROOT_A
     const folderA = lib.folderCards.value.find((c: any) => c.name === '合集A')
-    expect(folderA.tags).toEqual(['2D作品', '3D作品', '收藏'])
-    expect(folderA.tags).not.toContain('深层标签')
+    expect(folderA.tags).toEqual(['2D作品', '3D作品', '深层标签', '收藏'].sort((a, b) => a.localeCompare(b, 'zh-CN')))
+  })
+
+  it('「只有子文件夹」的目录层：左栏筛选池不为空（主人报的第 1 个问题）', () => {
+    const items = ref<any[]>([
+      makeItem('v1', ROOT_A, '外层/内层/深一层/x.mp4', { tags: field(['深层标签']) })
+    ])
+    const lib = useVideoLibrary({
+      enabled: true,
+      items: items as any,
+      resourceClass: class FakeVideo {},
+      isElectronEnvironment: ref(false),
+      save: vi.fn(async () => true)
+    })
+    lib.roots.value = [ROOT_A]
+    lib.currentRoot.value = ROOT_A
+    lib.currentRel.value = '外层'
+
+    // 这一层直接子文件是 0 个（正例是"同时有视频和子文件夹"）
+    expect(lib.scopedItems.value).toHaveLength(0)
+    // 但筛选池（子树）里要有东西，否则左栏标签/作者/格式全空
+    expect(lib.scopePool.value.map((i: any) => i.id.value)).toEqual(['v1'])
+    // 内层目录卡片照旧，且带着深层视频的标签并集
+    expect(lib.folderCards.value.map((c: any) => c.name)).toEqual(['内层'])
+    expect(lib.folderCards.value[0].tags).toEqual(['深层标签'])
   })
 
   it('进入子目录后：只显示那一层的视频，并列出更深的子目录', () => {
@@ -380,5 +405,295 @@ describe('视频库 · 扫描同步', () => {
     lib.roots.value = []
     await lib.rescan()
     expect(videoScan).not.toHaveBeenCalled()
+  })
+
+  it('整个子文件夹改名 → 第一次扫描就自动重连，不新建记录、不标丢失（主人报的第 2 个问题）', async () => {
+    const items = ref<any[]>([
+      makeItem('v1', ROOT_A, '合集A/01.mkv', { fileName: field('01.mkv'), tags: field(['教学']), watchCount: field(3) }),
+      makeItem('v2', ROOT_A, '合集A/02.mkv', { fileName: field('02.mkv'), tags: field(['收藏']) }),
+      makeItem('v3', ROOT_A, '合集A/深层/03.mkv', { fileName: field('03.mkv') })
+    ])
+    installFakeApi({
+      ok: true,
+      data: {
+        scannedAt: '2026-10-05T00:00:00.000Z',
+        roots: [{
+          root: ROOT_A,
+          ok: true,
+          exists: true,
+          files: [
+            scanFile('n1', ROOT_A, '合集A2/01.mkv'),
+            scanFile('n2', ROOT_A, '合集A2/02.mkv'),
+            scanFile('n3', ROOT_A, '合集A2/深层/03.mkv')
+          ]
+        }]
+      }
+    })
+
+    const save = vi.fn(async () => true)
+    const lib = useVideoLibrary({
+      enabled: true,
+      items: items as any,
+      resourceClass: makeVideoClass(),
+      isElectronEnvironment: ref(true),
+      save
+    })
+    lib.roots.value = [ROOT_A]
+    await lib.rescan()
+
+    // 一条新记录都不该建：231 个文件变成 462 条的根源就在这里
+    expect(items.value).toHaveLength(3)
+    expect(items.value.map((i: any) => i.id.value)).toEqual(['v1', 'v2', 'v3'])
+    // 路径跟着换，标签与打开次数一个都不能丢
+    expect(items.value[0].resourcePath.value).toBe(`${ROOT_A}\\合集A2\\01.mkv`)
+    expect(items.value[0].relPath.value).toBe('合集A2/01.mkv')
+    expect(items.value[0].tags.value).toEqual(['教学'])
+    expect(items.value[0].watchCount.value).toBe(3)
+    expect(items.value.every((i: any) => i.fileExists.value === true)).toBe(true)
+    // 回收站里干干净净
+    expect(lib.missingItems.value).toEqual([])
+    expect(save).toHaveBeenCalled()
+  })
+
+  it('同名文件有多个候选时绝不乱认（宁可各留一条）', async () => {
+    const items = ref<any[]>([
+      makeItem('v1', ROOT_A, 'A/x.mp4', { fileName: field('x.mp4') }),
+      makeItem('v2', ROOT_A, 'B/x.mp4', { fileName: field('x.mp4') })
+    ])
+    installFakeApi({
+      ok: true,
+      data: {
+        scannedAt: '2026-10-05T00:00:00.000Z',
+        roots: [{
+          root: ROOT_A,
+          ok: true,
+          exists: true,
+          files: [scanFile('n1', ROOT_A, 'C/x.mp4')]
+        }]
+      }
+    })
+
+    const lib = useVideoLibrary({
+      enabled: true,
+      items: items as any,
+      resourceClass: makeVideoClass(),
+      isElectronEnvironment: ref(true),
+      save: vi.fn(async () => true)
+    })
+    lib.roots.value = [ROOT_A]
+    await lib.rescan()
+
+    // 新文件建新记录，两条老的标丢失 —— 不猜哪条才是它
+    expect(items.value).toHaveLength(3)
+    expect(items.value.filter((i: any) => i.fileExists.value === false)).toHaveLength(2)
+    expect(lib.missingItems.value).toHaveLength(2)
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* 回收站：主视图只显示真实存在的文件                                            */
+/* -------------------------------------------------------------------------- */
+
+describe('视频库 · 回收站（丢失的文件）', () => {
+  function setupMissing() {
+    const items = ref<any[]>([
+      makeItem('v1', ROOT_A, 'alive/还活着.mp4', { fileName: field('还活着.mp4') }),
+      makeItem('v2', ROOT_A, '合集A/gone1.mp4', {
+        fileName: field('gone1.mp4'), fileExists: field(false), tags: field(['教学'])
+      }),
+      makeItem('v3', ROOT_A, '合集A/子目录/gone2.mp4', {
+        fileName: field('gone2.mp4'), fileExists: field(false), tags: field(['收藏'])
+      }),
+      makeItem('v4', ROOT_B, '别的根/gone3.mp4', {
+        fileName: field('gone3.mp4'), fileExists: field(false)
+      })
+    ])
+    const lib = useVideoLibrary({
+      enabled: true,
+      items: items as any,
+      resourceClass: class FakeVideo {},
+      isElectronEnvironment: ref(false),
+      save: vi.fn(async () => true)
+    })
+    lib.roots.value = [ROOT_A, ROOT_B]
+    return { items, lib }
+  }
+
+  it('主视图不含丢失的文件，也不含丢失撑起来的文件夹卡片', () => {
+    const { lib } = setupMissing()
+    expect(lib.scopedItems.value.map((i: any) => i.id.value)).toEqual(['v1'])
+
+    // 进到根目录层：只剩 alive 一张卡 —— 已经消失的「合集A」不再留在主视图里
+    lib.currentRoot.value = ROOT_A
+    expect(lib.folderCards.value.map((c: any) => c.name)).toEqual(['alive'])
+    // 而 ROOT_B 下唯一的东西是丢失文件 → 一张卡都不该有
+    lib.currentRoot.value = ROOT_B
+    expect(lib.folderCards.value).toEqual([])
+  })
+
+  it('丢失的记录只出现在回收站里（按原目录重建）', () => {
+    const { lib } = setupMissing()
+    expect(lib.missingItems.value.map((i: any) => i.id.value).sort()).toEqual(['v2', 'v3', 'v4'])
+
+    // 顶层：合集A（2 个：自己 1 个 + 子目录 1 个）与 别的根（1 个）
+    const top = lib.recycleFolderCards.value
+    expect(top.map((c: any) => c.name).sort()).toEqual(['别的根', '合集A'])
+    expect(top.every((c: any) => c.kind === 'missing')).toBe(true)
+    const hejiA = top.find((c: any) => c.name === '合集A')
+    expect(hejiA.count).toBe(2)
+    // 回收站里的文件夹也带子树标签并集（方便按标签找回）
+    expect(hejiA.tags).toEqual(['教学', '收藏'].sort((a, b) => a.localeCompare(b, 'zh-CN')))
+
+    // 进入 合集A → 列出它这一层的丢失文件 + 更深的子目录卡片
+    lib.setRecycleRel('合集A')
+    expect(lib.recycleFiles.value.map((i: any) => i.id.value)).toEqual(['v2'])
+    expect(lib.recycleFolderCards.value.map((c: any) => c.rel)).toEqual(['合集A/子目录'])
+
+    // 回到顶层
+    lib.resetRecycle()
+    expect(lib.recycleRel.value).toBe('')
+  })
+
+  it('切换目录/回到上一级会自动退出回收站的层级', () => {
+    const { lib } = setupMissing()
+    lib.setRecycleRel('合集A')
+    lib.enterFolder({ kind: 'root', root: ROOT_A, rel: '', name: ROOT_A, key: 'r', count: 0, fullPath: ROOT_A, tags: [] })
+    expect(lib.recycleRel.value).toBe('')
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* 「整个文件夹重新关联到…」：批量接回 + 合并扫描重复记录                         */
+/* -------------------------------------------------------------------------- */
+
+describe('视频库 · 整夹重新关联', () => {
+  it('挑一次新目录就把整夹接回来，并合并同路径的重复记录', async () => {
+    const items = ref<any[]>([
+      // 老记录：文件"丢了"，但带着标签与打开次数
+      makeItem('v1', ROOT_A, '合集A/01.mkv', {
+        fileName: field('01.mkv'), fileExists: field(false), tags: field(['教学']), watchCount: field(5)
+      }),
+      makeItem('v2', ROOT_A, '合集A/02.mkv', {
+        fileName: field('02.mkv'), fileExists: field(false)
+      }),
+      // 扫描按新路径建出来的"空壳"记录
+      makeItem('n1', ROOT_A, '合集A2/01.mkv', { fileName: field('01.mkv') })
+    ])
+
+    const videoRelinkBatch = vi.fn(async () => ({
+      ok: true,
+      folderPath: `${ROOT_A}\\合集A2`,
+      results: [
+        {
+          id: 'v1', ok: true, path: `${ROOT_A}\\合集A2\\01.mkv`, rootPath: ROOT_A,
+          relPath: '合集A2/01.mkv', fileName: '01.mkv', size: 111
+        },
+        { id: 'v2', ok: false, reason: 'not-found', message: '找不到' }
+      ]
+    }))
+    ;(globalThis as any).window.electronAPI = {
+      selectFolder: vi.fn(async () => ({ success: true, path: `${ROOT_A}\\合集A2` })),
+      videoRelinkBatch
+    }
+
+    const save = vi.fn(async () => true)
+    const lib = useVideoLibrary({
+      enabled: true,
+      items: items as any,
+      resourceClass: makeVideoClass(),
+      isElectronEnvironment: ref(true),
+      save
+    })
+    lib.roots.value = [ROOT_A]
+
+    const card = lib.recycleFolderCards.value[0]
+    expect(card.rel).toBe('合集A')
+    const summary = await lib.relinkMissingFolder(card)
+
+    expect(summary).toEqual({ ok: 1, merged: 1, failed: 1 })
+    expect(videoRelinkBatch).toHaveBeenCalledTimes(1)
+    // 入参是「相对丢失文件夹的内层路径」
+    const payload = videoRelinkBatch.mock.calls[0][0]
+    expect(payload.entries).toEqual([
+      { id: 'v1', innerRel: '01.mkv', fileName: '01.mkv' },
+      { id: 'v2', innerRel: '02.mkv', fileName: '02.mkv' }
+    ])
+
+    // 老记录接回来了：ID / 标签 / 打开次数都保住，重复记录被合并后删除
+    expect(items.value.map((i: any) => i.id.value).sort()).toEqual(['v1', 'v2'])
+    expect(items.value[0].fileExists.value).toBe(true)
+    expect(items.value[0].tags.value).toEqual(['教学'])
+    expect(items.value[0].watchCount.value).toBe(5)
+    expect(items.value[0].resourcePath.value).toBe(`${ROOT_A}\\合集A2\\01.mkv`)
+    expect(save).toHaveBeenCalled()
+  })
+
+  it('在子目录里进回收站：卡片的 rel 相对当前层，切 relPath 用相对根目录的那一段', async () => {
+    const items = ref<any[]>([
+      makeItem('v1', ROOT_A, '外层/内层/01.mkv', {
+        fileName: field('01.mkv'), fileExists: field(false), tags: field(['教学'])
+      })
+    ])
+    const videoRelinkBatch = vi.fn(async () => ({
+      ok: true,
+      folderPath: `${ROOT_A}\\外层\\内层2`,
+      results: [{
+        id: 'v1', ok: true, path: `${ROOT_A}\\外层\\内层2\\01.mkv`, rootPath: ROOT_A,
+        relPath: '外层/内层2/01.mkv', fileName: '01.mkv', size: 10
+      }]
+    }))
+    ;(globalThis as any).window.electronAPI = {
+      selectFolder: vi.fn(async () => ({ success: true, path: `${ROOT_A}\\外层\\内层2` })),
+      videoRelinkBatch
+    }
+
+    const lib = useVideoLibrary({
+      enabled: true,
+      items: items as any,
+      resourceClass: makeVideoClass(),
+      isElectronEnvironment: ref(true),
+      save: vi.fn(async () => true)
+    })
+    lib.roots.value = [ROOT_A]
+    lib.currentRoot.value = ROOT_A
+    lib.currentRel.value = '外层'
+
+    const card = lib.recycleFolderCards.value[0]
+    expect(card.rel).toBe('内层') // 相对当前层（'外层'）
+    expect(card.fullPath).toBe(`${ROOT_A}\\外层\\内层`) // 磁盘上的旧绝对路径
+
+    const summary = await lib.relinkMissingFolder(card)
+
+    expect(summary.ok).toBe(1)
+    // 内层相对路径必须是「相对丢失文件夹」的，而不是相对根目录的
+    expect(videoRelinkBatch.mock.calls[0][0].entries).toEqual([
+      { id: 'v1', innerRel: '01.mkv', fileName: '01.mkv' }
+    ])
+    expect(items.value[0].fileExists.value).toBe(true)
+    expect(items.value[0].relPath.value).toBe('外层/内层2/01.mkv')
+  })
+
+  it('用户取消选择文件夹时什么都不做', async () => {    const items = ref<any[]>([
+      makeItem('v1', ROOT_A, '合集A/01.mkv', { fileName: field('01.mkv'), fileExists: field(false) })
+    ])
+    const videoRelinkBatch = vi.fn()
+    ;(globalThis as any).window.electronAPI = {
+      selectFolder: vi.fn(async () => ({ success: false })),
+      videoRelinkBatch
+    }
+
+    const lib = useVideoLibrary({
+      enabled: true,
+      items: items as any,
+      resourceClass: makeVideoClass(),
+      isElectronEnvironment: ref(true),
+      save: vi.fn(async () => true)
+    })
+    lib.roots.value = [ROOT_A]
+
+    const summary = await lib.relinkMissingFolder(lib.recycleFolderCards.value[0])
+    expect(summary).toEqual({ ok: 0, merged: 0, failed: 0 })
+    expect(videoRelinkBatch).not.toHaveBeenCalled()
+    expect(items.value[0].fileExists.value).toBe(false)
   })
 })

@@ -211,6 +211,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   videoStat: (filePaths) => ipcRenderer.invoke('video-stat', filePaths),
   // 「重新关联到…」：校验用户挑的新文件并算出该记录应有的字段
   videoRelink: (payload) => ipcRenderer.invoke('video-relink', payload),
+  // 「整个文件夹重新关联到…」：指认丢失目录的新位置，批量算好每条的字段
+  videoRelinkBatch: (payload) => ipcRenderer.invoke('video-relink-batch', payload),
   // 监听绑定目录的变化
   onVideoLibraryChanged: (callback) => {
     const fn = (event, data) => callback(data)

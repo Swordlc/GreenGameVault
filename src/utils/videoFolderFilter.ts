@@ -5,15 +5,21 @@
  *   「视频附上标签后，它所在的文件夹（仅本身文件夹，不包含上级或下级文件夹）拥有这些标签的并集；
  *     这样能够在筛选条件下仍显示文件夹」
  *
- * 于是规则定成三条：
- *   1. **标签并集**：文件夹的标签 = 它**直接**包含的那些视频的标签并集（不含子文件夹里的）；
+ * 主人 2026-10-05 反馈（这次修正了口径）：
+ *   「当文件夹内部只有子文件夹时（嵌套层级），左侧筛选显示空」——
+ *   原实现只统计**直接**子级，于是"只有子文件夹、视频在更深处"的目录层
+ *   左栏标签/作者/格式全是空的（筛选池里一个视频都没有），这类文件夹也会被标签筛选吃掉。
+ *
+ * 于是口径统一改成「**子树**」：一个文件夹 = 它自己 + 它下面所有层级的视频。
+ *   1. **标签并集**：文件夹的标签 = 它子树里所有视频的标签并集；
  *   2. 左栏标签筛选生效时，文件夹按并集判定：
- *        include —— 每个被选的标签都必须在并集里（文件夹里"至少有一个"带该标签的视频）
+ *        include —— 每个被选的标签都必须在并集里（子树里"至少有一个"带该标签的视频）
  *        exclude —— 并集里出现任何一个被排除的标签就隐藏
  *      （注意：这是"并集语义"，不是"有一个视频同时满足全部条件"，
  *        因为主人要的是"筛选下仍能看到文件夹、进去再挑"）
  *   3. 搜索框：文件夹**自己的名字/路径**命中查询时照样显示；
- *      另外，文件夹里只要有**直接命中查询**的视频，它也要显示（否则搜东西时文件夹全消失，没法往里钻）。
+ *      另外，文件夹子树里只要有**直接命中查询**的视频，它也要显示
+ *      （否则搜深层文件时上层文件夹全消失，没法往里钻）。
  *
  * 纯函数，专门给单测用（`src/tests/videoFolderFilter.spec.ts`）。
  */
@@ -24,11 +30,12 @@ import { matchesFuzzy } from './fuzzySearch'
 export interface FolderLike {
   key: string
   name: string
-  kind: 'root' | 'folder'
+  /** root = 绑定根目录卡片；folder = 层级浏览里的子目录；missing = 回收站里的"原目录" */
+  kind: 'root' | 'folder' | 'missing'
   root: string | null
   rel: string
   fullPath: string
-  /** 直接包含的视频标签并集（不含子文件夹） */
+  /** 子树（含自身与所有下级）视频的标签并集 */
   tags: string[]
 }
 
@@ -38,9 +45,28 @@ export interface FolderTagFilter {
   exclude: string[]
 }
 
+/** 目录路径归一化：反斜杠转正斜杠、去掉首尾分隔符（Windows 路径两套写法都能比） */
+export function normalizeFolderPath(input: unknown): string {
+  return String(input ?? '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '')
+}
+
+/**
+ * 某个视频所在的目录是否**位于**（或等于）目标文件夹之内。
+ * 目标为 '' （根目录卡片）时，该根目录下所有视频都算在内。
+ */
+export function folderContainsVideo(folderRel: string, videoFolder: string): boolean {
+  const target = normalizeFolderPath(folderRel)
+  const current = normalizeFolderPath(videoFolder)
+  if (!target) return true
+  return current === target || current.startsWith(target + '/')
+}
+
 /**
  * 文件夹的标签并集是否满足标签筛选
- * @param folderTags 该文件夹直接视频的标签并集
+ * @param folderTags 该文件夹子树的标签并集
  * @param filter include / exclude
  */
 export function satisfiesFolderTagFilter(folderTags: string[], filter: FolderTagFilter): boolean {
@@ -72,8 +98,8 @@ export interface FolderVisibilityContext {
   matchVideo: (video: any) => boolean
   /** 取某条视频的标签（兼容 ResourceField / 数组） */
   tagsOfVideo: (video: any) => string[]
-  /** 某一层里、直接属于该文件夹的视频（root 卡片则给它整个根目录下的顶层视频） */
-  directVideosOf: (folder: FolderLike) => any[]
+  /** 文件夹子树里的视频（含更深层级；root 卡片则给它整个根目录下的视频） */
+  videosInsideOf: (folder: FolderLike) => any[]
 }
 
 /**
@@ -89,10 +115,10 @@ export function isFolderVisible(folder: FolderLike, context: FolderVisibilityCon
   const tags = Array.isArray(folder.tags) ? folder.tags : []
   if (!satisfiesFolderTagFilter(tags, context.tagFilter)) return false
 
-  // 3) 有搜索词时，还要"里面确实有对得上的视频"，否则搜出来的文件夹点进去是空的
+  // 3) 有搜索词时，还要"子树里确实有对得上的视频"，否则搜出来的文件夹点进去是空的
   if (query) {
-    const direct = context.directVideosOf(folder) || []
-    return direct.some(video => context.matchVideo(video))
+    const inside = context.videosInsideOf(folder) || []
+    return inside.some(video => context.matchVideo(video))
   }
 
   return true
@@ -107,7 +133,7 @@ export function filterVisibleFolders(folders: FolderLike[], context: FolderVisib
 }
 
 /**
- * 收集某一层里「直接属于该文件夹」的视频的标签并集。
+ * 收集文件夹**子树**（含自身与所有下级）视频的标签并集。
  *
  * @param videos 候选视频（通常是整个视频库）
  * @param folder 目标文件夹卡片
@@ -123,15 +149,13 @@ export function collectFolderTags(
   tagsOf: (video: any) => string[]
 ): string[] {
   const set = new Set<string>()
-  const targetRel = folder.rel || ''
   const targetRoot = folder.root
 
   for (const video of videos || []) {
     const videoRoot = rootOf(video)
-    // 根目录卡片：整层（根下直接放着的视频）都算它的
+    // 根目录卡片：整层（根下所有层级的视频）都算它的
     if (targetRoot !== null && !samePath(videoRoot, targetRoot)) continue
-    const folderPath = folderPathOf(video)
-    if (folder.kind === 'folder' ? folderPath !== targetRel : folderPath !== '') continue
+    if (!folderContainsVideo(folder.rel || '', folderPathOf(video))) continue
     for (const tag of tagsOf(video) || []) {
       if (tag) set.add(tag)
     }

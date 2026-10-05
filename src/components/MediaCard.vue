@@ -347,6 +347,10 @@ export default {
       if (this.type === 'game') {
         return !this.isArchive
       }
+      // 视频文件已经丢了（回收站里）就没有"播放"可言，留右键的「重新关联到…」
+      if (this.type === 'video' && this.showFileError) {
+        return false
+      }
       return true
     },
     

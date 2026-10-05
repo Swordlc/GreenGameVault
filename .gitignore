@@ -86,6 +86,9 @@ jspm_packages/
 out/
 SaveData
 
+# 本地临时产物（冒烟脚本、日志、临时 profile、数据库备份…）
+.temp/
+
 # ---- GreenGameVault 追加 ----
 
 # 伪装壁纸：非本作品版权素材，仓库不收录（disguise.txt 保留，程序逻辑完整）

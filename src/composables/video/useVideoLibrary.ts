@@ -22,6 +22,16 @@ import notify from '../../utils/NotificationService'
 import saveManager from '../../utils/SaveManager'
 // 文件夹标签并集 / 筛选下的可见性（纯函数，可单测）
 import { collectFolderTags } from '../../utils/videoFolderFilter'
+// 字段读写 / 整夹重连 / 重复记录合并（纯函数，可单测）
+import {
+  fieldValue,
+  setField,
+  isMissingItem,
+  parentFolderOf,
+  planFolderRelink,
+  mergeVideoRecords,
+  applyRelinkResult
+} from '../../utils/videoRelink'
 
 /** 与主进程 video-utils.DEFAULT_VIDEO_EXTENSIONS 保持一致（这里只用于设置页展示与回退） */
 export const DEFAULT_VIDEO_EXTENSIONS = [
@@ -52,13 +62,14 @@ export interface VideoRootInfo {
 export interface FolderCard {
   key: string
   name: string
-  kind: 'root' | 'folder'
+  /** root = 绑定根目录；folder = 层级浏览里的子目录；missing = 回收站里重建出来的"原目录" */
+  kind: 'root' | 'folder' | 'missing'
   root: string | null
   rel: string
   count: number
   fullPath: string
   /**
-   * 该文件夹**直接**包含的视频标签并集（不含子文件夹）——
+   * 该文件夹**整棵子树**（含更深层级）视频的标签并集 ——
    * 用于「筛选条件下仍显示文件夹」（见 utils/videoFolderFilter.ts）
    */
   tags: string[]
@@ -96,22 +107,6 @@ function joinRel(base: string, name: string): string {
   return base ? `${base}/${name}` : name
 }
 
-/** 取 ResourceField / 普通值 */
-function fieldValue(field: any): any {
-  if (field && typeof field === 'object' && 'value' in field) return field.value
-  return field
-}
-
-/** 写 ResourceField / 普通值 */
-function setField(item: any, key: string, value: any): void {
-  const current = item?.[key]
-  if (current && typeof current === 'object' && 'value' in current) {
-    current.value = value
-  } else if (item) {
-    item[key] = value
-  }
-}
-
 export function useVideoLibrary(options: UseVideoLibraryOptions) {
   const { enabled, items, resourceClass: ResourceClass, isElectronEnvironment, save } = options
 
@@ -143,26 +138,92 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
   /** 当前已绑定的根目录键集合（用于过滤掉解绑后残留的记录） */
   const rootKeySet = computed(() => new Set(roots.value.map(pathKey)))
 
-  /** 绑定根目录内、且属于当前层级的视频 */
+  /**
+   * 这条记录是否落在**当前浏览范围**内（绑定根目录之内、且不超出当前层）。
+   *
+   * ⚠️ 与旧实现的区别：这里是「子树」语义 —— `currentRel = A` 时，
+   * `A/b/x.mp4` 也算在范围内。左栏筛选池要用它，否则
+   * 「文件夹里只有子文件夹」的那一层左栏会是空的（主人 2026-10-05 报的第 1 个问题）。
+   */
+  function isUnderCurrentLevel(item: any): boolean {
+    const itemRoot = String(fieldValue(item.rootPath) || '')
+    if (!rootKeySet.value.has(pathKey(itemRoot))) return false
+    if (currentRoot.value === null) return true
+    if (pathKey(itemRoot) !== pathKey(currentRoot.value)) return false
+
+    const rel = currentRel.value
+    if (!rel) return true
+    const folder = parentFolderOf(fieldValue(item.relPath))
+    return folder === rel || folder.startsWith(rel + '/')
+  }
+
+  /**
+   * 这条记录是否**正好在当前这一层**（不含更深一层）。
+   * 「全部」层是平铺视图：所有层级都显示（与旧行为一致）。
+   */
+  function isAtCurrentLevel(item: any): boolean {
+    if (!isUnderCurrentLevel(item)) return false
+    if (currentRoot.value === null) return true
+    return parentFolderOf(fieldValue(item.relPath)) === currentRel.value
+  }
+
+  /**
+   * 当前层**实际显示**的视频：文件系统里确实存在的那些（丢失的一律不进主视图）。
+   *
+   * 主人 2026-10-05 需求原话：
+   *   「主视图与文件目录强绑定，不要有 deleted 的文件或文件夹还显示在主视图里面，
+   *     而是全塞到丢失的文件里面，类似一个回收站的功能」
+   */
   const scopedItems = computed<any[]>(() => {
     if (!enabled) return items.value
-    const all = items.value || []
-    const keys = rootKeySet.value
-    if (keys.size === 0) return []
-
-    const root = currentRoot.value
-    const rel = currentRel.value
-
-    return all.filter(item => {
-      const itemRoot = String(fieldValue(item.rootPath) || '')
-      if (!keys.has(pathKey(itemRoot))) return false
-      if (root === null) return true
-      if (pathKey(itemRoot) !== pathKey(root)) return false
-      // 只在「当前这一层」显示：不含子目录里的文件
-      const folder = String(fieldValue(item.relPath) || '').split('/').slice(0, -1).join('/')
-      return folder === rel
-    })
+    if (rootKeySet.value.size === 0) return []
+    return (items.value || []).filter(item => !isMissingItem(item) && isAtCurrentLevel(item))
   })
+
+  /**
+   * 左栏筛选（标签/作者/格式）用的**筛选池**：当前范围的整棵子树里的**真实存在**的视频。
+   *
+   * 为什么是子树而不是「当前这一层」：
+   *   主人 2026-10-05 报的「文件夹里只有子文件夹时左侧筛选显示空」，
+   *   根因就是池子只装了这一层的直接子文件。
+   *
+   * 为什么不含丢失记录：
+   *   丢失文件身上的标签如果混进左栏，就会出现「左栏有标签、主视图点进去啥都没有」
+   *   ——「丢失的文件 N」那个计数改用页面层单独注入（见 GenericResourceView.applyMissingCount）。
+   */
+  const scopePool = computed<any[]>(() => {
+    if (!enabled) return items.value
+    if (rootKeySet.value.size === 0) return []
+    return (items.value || []).filter(item => !isMissingItem(item) && isUnderCurrentLevel(item))
+  })
+
+  /**
+   * 回收站内容：当前范围内**已丢失**的记录（按"原目录"重建的树在下面）。
+   */
+  const missingItems = computed<any[]>(() => {
+    if (!enabled || rootKeySet.value.size === 0) return []
+    return (items.value || []).filter(item => isMissingItem(item) && isUnderCurrentLevel(item))
+  })
+
+  /**
+   * 取一条丢失记录「相对当前层」的原目录（'' = 正好在当前层）。
+   * 回收站用它重建那棵已经不存在的目录树。
+   */
+  function relativeFolderOf(item: any): string {
+    const folder = parentFolderOf(fieldValue(item.relPath))
+    const base = currentRel.value
+    if (!base) return folder
+    if (folder === base) return ''
+    return folder.startsWith(base + '/') ? folder.slice(base.length + 1) : ''
+  }
+
+  /** 回收站当前钻到的层级（相对当前层；'' = 顶层） */
+  const recycleRel = ref('')
+
+  /** 回收站顶层要显示的文件：原目录正好等于 `recycleRel` 的那些 */
+  const recycleFiles = computed<any[]>(() =>
+    missingItems.value.filter(item => relativeFolderOf(item) === recycleRel.value)
+  )
 
   /** 面包屑：全部 → 根目录 → 子目录… */
   const breadcrumb = computed<BreadcrumbItem[]>(() => {
@@ -187,7 +248,11 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
   /**
    * 当前层下的子文件夹卡片。
    *  - 处于「全部」层：每个绑定根目录一张卡
-   *  - 处于某个目录层：其下每个直接子目录一张卡（数量按递归统计，标签按**直接**视频取并集）
+   *  - 处于某个目录层：其下每个直接子目录一张卡
+   *
+   * ⚠️ 只统计**文件系统里真实存在**的记录：丢失的文件不再撑起文件夹卡片，
+   *    否则"整个文件夹被改名"之后，那个已经不存在的目录还会留在主视图里
+   *    （主人 2026-10-05 报的第 2 个问题）。
    */
   const folderCards = computed<FolderCard[]>(() => {
     if (!enabled) return []
@@ -198,17 +263,16 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
       const raw = fieldValue(item.tags)
       return Array.isArray(raw) ? raw.filter((tag: unknown): tag is string => typeof tag === 'string' && tag !== '') : []
     }
-    const folderPathOf = (item: any): string => {
-      const rel = String(fieldValue(item.relPath) || '')
-      const index = rel.lastIndexOf('/')
-      return index > 0 ? rel.slice(0, index) : ''
-    }
+    const folderPathOf = (item: any): string => parentFolderOf(fieldValue(item.relPath))
     const rootOf = (item: any): string => String(fieldValue(item.rootPath) || '')
+
+    /** 只有真实存在的文件才算数 */
+    const alive = (items.value || []).filter(item => !isMissingItem(item))
 
     if (currentRoot.value === null) {
       return roots.value.map(root => {
         const info = rootInfos.value.find(entry => pathKey(entry.root) === pathKey(root))
-        const mine = (items.value || []).filter(item => pathKey(rootOf(item)) === pathKey(root))
+        const mine = alive.filter(item => pathKey(rootOf(item)) === pathKey(root))
         const card: FolderCard = {
           key: `root:${pathKey(root)}`,
           name: root,
@@ -219,7 +283,7 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
           fullPath: root,
           tags: []
         }
-        // 根卡片：只取「直接散在根目录下」的视频标签（不含子文件夹）
+        // 根卡片：整个根目录子树（含子文件夹）的标签并集
         card.tags = collectFolderTags(mine, card, folderPathOf, rootOf, tagsOf)
         return card
       })
@@ -230,7 +294,7 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
     const prefix = rel ? `${rel}/` : ''
     const bucket = new Map<string, number>()
 
-    for (const item of items.value || []) {
+    for (const item of alive) {
       if (pathKey(rootOf(item)) !== pathKey(root)) continue
       const itemRel = String(fieldValue(item.relPath) || '')
       if (!itemRel) continue
@@ -244,7 +308,7 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
       bucket.set(childRel, (bucket.get(childRel) || 0) + 1)
     }
 
-    const mineInRoot = (items.value || []).filter(item => pathKey(rootOf(item)) === pathKey(root))
+    const mineInRoot = alive.filter(item => pathKey(rootOf(item)) === pathKey(root))
 
     return Array.from(bucket.entries())
       .sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'))
@@ -259,11 +323,186 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
           fullPath: `${root}\\${childRel.replace(/\//g, '\\')}`,
           tags: []
         }
-        // 只统计**直接**属于这个子目录的视频（不含更深一层）
+        // 这个子目录**整棵子树**的标签并集（含更深层级，见 utils/videoFolderFilter.ts）
         card.tags = collectFolderTags(mineInRoot, card, folderPathOf, rootOf, tagsOf)
         return card
       })
   })
+
+  /* --------------------------- 回收站（丢失的文件） --------------------------- */
+
+  /**
+   * 回收站里的「原目录」卡片。
+   *
+   * 那些目录在磁盘上可能已经不存在了，所以这棵树是**用记录里的旧相对路径重建**的：
+   *   - 按 `recycleRel` 的下一个路径段分组（和主视图的层级浏览一个手感）；
+   *   - 卡片上的 count 是这棵子树里丢失文件的数量；
+   *   - 右键这张卡 → 「整个文件夹重新关联到…」→ 挑一次新目录，整夹对号入座接回来。
+   */
+  const recycleFolderCards = computed<FolderCard[]>(() => {
+    if (!enabled) return []
+    const prefix = recycleRel.value ? `${recycleRel.value}/` : ''
+    const buckets = new Map<string, { root: string, rel: string, name: string, files: any[] }>()
+
+    for (const item of missingItems.value) {
+      const rel = relativeFolderOf(item)
+      if (!rel) continue
+      if (prefix && !rel.startsWith(prefix)) continue
+      const remainder = prefix ? rel.slice(prefix.length) : rel
+      const segment = remainder.split('/')[0]
+      if (!segment) continue
+      const childRel = recycleRel.value ? `${recycleRel.value}/${segment}` : segment
+      const root = String(fieldValue(item.rootPath) || '')
+      const key = `${pathKey(root)}|${childRel}`
+      const bucket = buckets.get(key) || { root, rel: childRel, name: segment, files: [] }
+      bucket.files.push(item)
+      buckets.set(key, bucket)
+    }
+
+    const cards: FolderCard[] = []
+    for (const bucket of buckets.values()) {
+      // fullPath 是**磁盘上的旧绝对路径**（提示用），所以要拼上当前层前缀
+      const absRel = currentRel.value ? `${currentRel.value}/${bucket.rel}` : bucket.rel
+      // 子树标签并集（含更深层级）：回收站里也能按标签/搜索找回来
+      const card: FolderCard = {
+        key: `missing:${pathKey(bucket.root)}:${bucket.rel}`,
+        name: bucket.name,
+        kind: 'missing',
+        root: bucket.root,
+        rel: bucket.rel,
+        count: bucket.files.length,
+        fullPath: `${bucket.root}\\${absRel.replace(/\//g, '\\')}`,
+        tags: []
+      }
+      card.tags = collectFolderTags(
+        bucket.files,
+        card,
+        (item: any) => relativeFolderOf(item),
+        (item: any) => String(fieldValue(item.rootPath) || ''),
+        (item: any) => {
+          const raw = fieldValue(item.tags)
+          return Array.isArray(raw) ? raw.filter((tag: unknown): tag is string => typeof tag === 'string' && tag !== '') : []
+        }
+      )
+      cards.push(card)
+    }
+
+    return cards.sort((a, b) => a.rel.localeCompare(b.rel, 'zh-CN'))
+  })
+
+  /** 回收站：进入/返回某个"原目录" */
+  function setRecycleRel(rel: string): void {
+    recycleRel.value = String(rel || '')
+  }
+
+  /** 回收站：回到顶层（切层或进出回收站时调用） */
+  function resetRecycle(): void {
+    recycleRel.value = ''
+  }
+
+  /** 取丢失目录卡片在「根目录下」的绝对相对路径（多选重连的入参要用） */
+  function absoluteFolderRel(card: FolderCard): string {
+    if (!card || card.kind === 'root') return ''
+    return currentRel.value ? `${currentRel.value}/${card.rel}` : card.rel
+  }
+
+  /**
+   * 「整个文件夹重新关联到…」：挑一次新目录，把这张卡子树里的丢失记录整批接回来。
+   *
+   * 对号入座由主进程按**路径**做（`resolveRelinkFolderBatch`），不猜内容；
+   * 目标路径上如果已经有扫描新建的记录，就把它合并进来再删掉，
+   * 免得同一个文件在库里留下两条记录（这是主人这次遇到的"231 个丢失 + 231 个新记录"）。
+   */
+  async function relinkMissingFolder(card: FolderCard): Promise<{ ok: number, merged: number, failed: number }> {
+    const client = api()
+    const summary = { ok: 0, merged: 0, failed: 0 }
+    if (!card || card.kind !== 'missing') return summary
+    if (!isElectronEnvironment.value || !client?.selectFolder || !client?.videoRelinkBatch) {
+      notify.toast('error', '当前环境不支持', '请在应用内操作')
+      return summary
+    }
+
+    // ⚠️ 两个"相对"要分清：
+    //   card.rel          —— 相对**当前浏览层**（回收站树用它分组、判子树）
+    //   absoluteFolderRel —— 相对**根目录**（planFolderRelink 要从 relPath 上切掉这一段）
+    const relInTree = card.rel || ''
+    const folderAbsRel = absoluteFolderRel(card)
+    const targets = missingItems.value.filter(item => {
+      const rel = relativeFolderOf(item)
+      return rel === relInTree || rel.startsWith(relInTree + '/')
+    })
+    const plan = planFolderRelink(targets, folderAbsRel)
+    if (plan.length === 0) {
+      notify.toast('warning', '没有可重新关联的文件', card.fullPath)
+      return summary
+    }
+
+    const picked = await client.selectFolder()
+    if (!picked?.success || !picked.path) return summary
+
+    const response = await client.videoRelinkBatch({
+      roots: [...roots.value],
+      folderPath: picked.path,
+      entries: plan.map(entry => ({ id: entry.id, innerRel: entry.innerRel, fileName: entry.fileName }))
+    })
+
+    if (!response?.ok) {
+      notify.toast('error', '无法重新关联', response?.error || '未知错误')
+      return summary
+    }
+
+    const byId = new Map<string, any>()
+    for (const result of response.results || []) byId.set(String(result.id), result)
+
+    const duplicates: any[] = []
+    for (const entry of plan) {
+      const resolved = byId.get(entry.id)
+      if (!resolved?.ok) {
+        summary.failed++
+        continue
+      }
+      const targetKey = pathKey(resolved.path)
+      const existing = (items.value || []).find((item: any) => {
+        if (item === entry.item) return false
+        return pathKey(String(fieldValue(item.resourcePath) || '')) === targetKey
+      })
+      if (existing) {
+        // 扫描按新路径建过一条"空壳"记录：把它的数据并进老记录，然后丢掉它
+        mergeVideoRecords(entry.item, existing)
+        duplicates.push(existing)
+        summary.merged++
+      }
+      applyRelinkResult(entry.item, resolved)
+      summary.ok++
+    }
+
+    if (duplicates.length > 0) {
+      const drop = new Set(duplicates)
+      items.value = (items.value || []).filter((item: any) => !drop.has(item))
+    }
+
+    await save()
+    refreshRecycleAfterRelink()
+
+    notify.toast(
+      summary.ok > 0 ? 'success' : 'error',
+      '整夹重新关联完成',
+      `接回 ${summary.ok} 个文件` +
+      (summary.merged > 0 ? `（顺带合并了 ${summary.merged} 条扫描重复记录）` : '') +
+      (summary.failed > 0 ? `；还有 ${summary.failed} 个在新文件夹里没找到，仍留在回收站` : '')
+    )
+    return summary
+  }
+
+  /** 重连完成后，如果当前这层已经没有丢失文件了，把回收站的层级退回去 */
+  function refreshRecycleAfterRelink(): void {
+    if (recycleRel.value && !missingItems.value.some(item => {
+      const rel = relativeFolderOf(item)
+      return rel === recycleRel.value || rel.startsWith(recycleRel.value + '/')
+    })) {
+      recycleRel.value = ''
+    }
+  }
 
   /** 是否有任何绑定目录 */
   const hasRoots = computed(() => roots.value.length > 0)
@@ -405,24 +644,41 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
         }
       }
 
-      // 2) 重新关联：文件名与所属根目录都对得上的「丢失」记录，认领改名后的新路径。
-      //    这样改名不会丢掉标签与打开次数（ID 保持不变）。
+      // 2) 重新关联：**这轮没扫到**的记录 + **扫到但库里没有**的文件，
+      //    文件名与所属根目录都对得上就认领新路径（改名/换目录不丢标签与打开次数，ID 保持不变）。
+      //
+      //    ⚠️ 这里修的是一个顺序错误（主人 2026-10-05 报的第 2 个问题）：
+      //    旧实现只把**已经标成「丢失」**的记录拿来认领，于是「第一次扫描到改名」时
+      //    认领的候选池是空的 —— 231 个文件被当成"删了 231 个 + 新加 231 个"，
+      //    主视图里那个已经不存在的文件夹也一直留着。现在改成：
+      //    「路径没扫到」就是候选，不管它当前有没有被标记为丢失。
+      //
       //    只有**唯一候选**才敢认领，同名文件多个时宁可各留一条，也不猜。
-      const missingByRootAndName = new Map<string, any[]>()
+      const staleRecords: any[] = []
       for (const item of items.value || []) {
-        if (fieldValue(item.fileExists) !== false) continue
+        const path = String(fieldValue(item.resourcePath) || '')
+        if (!path) continue
+        if (scannedByKey.has(pathKey(path))) continue
+        const itemRootKey = pathKey(String(fieldValue(item.rootPath) || ''))
+        if (!availableRootKeys.has(itemRootKey)) continue // 根目录掉线：不动
+        staleRecords.push(item)
+      }
+
+      const staleByRootAndName = new Map<string, any[]>()
+      for (const item of staleRecords) {
         const fileName = String(fieldValue(item.fileName) || '').toLowerCase()
         if (!fileName) continue
         const key = `${pathKey(String(fieldValue(item.rootPath) || ''))}|${fileName}`
-        const bucket = missingByRootAndName.get(key) || []
+        const bucket = staleByRootAndName.get(key) || []
         bucket.push(item)
-        missingByRootAndName.set(key, bucket)
+        staleByRootAndName.set(key, bucket)
       }
 
       const stillUnmatched: any[] = []
+      const relinkedRecords = new Set<any>()
       for (const file of unmatchedFiles) {
         const key = `${pathKey(file.rootPath || '')}|${String(file.fileName || '').toLowerCase()}`
-        const bucket = missingByRootAndName.get(key)
+        const bucket = staleByRootAndName.get(key)
         if (!bucket || bucket.length !== 1) {
           stillUnmatched.push(file)
           continue
@@ -431,11 +687,15 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
         setField(target, 'resourcePath', file.fullPath)
         setField(target, 'relPath', file.relPath || '')
         setField(target, 'fileName', file.fileName || '')
+        if (pathKey(String(fieldValue(target.rootPath) || '')) !== pathKey(file.rootPath || '')) {
+          setField(target, 'rootPath', file.rootPath || '')
+        }
         setField(target, 'fileSize', file.size || 0)
         setField(target, 'fileExists', true)
         if (!fieldValue(target.name) && file.name) setField(target, 'name', file.name)
         // 认领后把这条记录纳入索引，避免后面重复建记录
         existingByKey.set(pathKey(file.fullPath), target)
+        relinkedRecords.add(target)
         relinked++
       }
 
@@ -465,15 +725,10 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
         created++
       }
 
-      // 4) 库里有、但这轮没扫到 → 只有在「根目录本身可用」时才敢判定为丢失
-      for (const item of items.value || []) {
-        const path = String(fieldValue(item.resourcePath) || '')
-        if (!path) continue
-        const key = pathKey(path)
-        if (scannedByKey.has(key)) continue
-
-        const itemRootKey = pathKey(String(fieldValue(item.rootPath) || ''))
-        if (!availableRootKeys.has(itemRootKey)) continue // 根目录掉线：不动
+      // 4) 剩下的"没扫到、也没能重连"→ 标记为丢失（进回收站，不再留在主视图）
+      //    只在「根目录本身可用」时才敢判定（根目录掉线的情况上面已经排除）
+      for (const item of staleRecords) {
+        if (relinkedRecords.has(item)) continue
         if (fieldValue(item.fileExists) === false) continue
 
         setField(item, 'fileExists', false)
@@ -614,6 +869,7 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
   /* ------------------------------ 层级浏览 ------------------------------ */
 
   function enterFolder(card: FolderCard): void {
+    resetRecycle()
     if (card.kind === 'root') {
       currentRoot.value = card.root
       currentRel.value = ''
@@ -624,11 +880,13 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
   }
 
   function goToBreadcrumb(crumb: BreadcrumbItem): void {
+    resetRecycle()
     currentRoot.value = crumb.root
     currentRel.value = crumb.rel
   }
 
   function goUp(): void {
+    resetRecycle()
     if (!currentRel.value) {
       currentRoot.value = null
       return
@@ -648,6 +906,7 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
     // 解绑的目录不进层级（记录还在，但不该出现在浏览里）
     if (!roots.value.some(root => pathKey(root) === pathKey(itemRoot))) return
 
+    resetRecycle()
     currentRoot.value = itemRoot
     const rel = String(fieldValue(item.relPath) || '')
     const folder = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : ''
@@ -1091,10 +1350,24 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
     currentRel,
     // 计算属性
     scopedItems,
+    scopePool,
     folderCards,
     breadcrumb,
     hasRoots,
     isScopeEmpty,
+    // 回收站（丢失的文件）
+    missingItems,
+    recycleRel,
+    recycleFiles,
+    recycleFolderCards,
+    setRecycleRel,
+    resetRecycle,
+    relinkMissingFolder,
+    // 范围判定（页面用它把「主视图」与文件系统绑死）
+    isUnderCurrentLevel,
+    isAtCurrentLevel,
+    relativeFolderOf,
+    absoluteFolderRel,
     // 生命周期
     initialize,
     rescan,
@@ -1116,7 +1389,7 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
     grabCoverBatch,
     deleteCover,
     revealInExplorer,
-    // 手动重新关联（文件改名/挪走后由用户指认）
+    // 手动重新关联（文件挪走后由用户指认；整夹重连见 relinkMissingFolder）
     relinkVideo
   }
 }

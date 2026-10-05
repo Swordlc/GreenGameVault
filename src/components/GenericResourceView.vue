@@ -37,7 +37,8 @@
     >
       <!-- ===== 视频页专属：面包屑 + 绑定目录状态 ===== -->
       <div v-if="isVideoPage" class="video-path-bar">
-        <div class="video-breadcrumb">
+        <!-- 正常浏览：全部 › 根目录 › 子目录… -->
+        <div v-if="!isRecycleBinMode" class="video-breadcrumb">
           <span class="video-crumb-home">🗂️</span>
           <template v-for="(crumb, index) in videoBreadcrumb" :key="`${crumb.root || 'all'}|${crumb.rel}`">
             <span
@@ -49,6 +50,28 @@
             <span v-if="index < videoBreadcrumb.length - 1" class="video-crumb-sep">›</span>
           </template>
         </div>
+
+        <!-- 回收站：丢失的文件 › 原目录 › … -->
+        <div v-else class="video-breadcrumb is-recycle">
+          <span class="video-crumb-home">♻️</span>
+          <span
+            class="video-crumb"
+            :class="{ 'is-current': !videoRecycleRel }"
+            title="丢失的文件：只放磁盘上已经找不到的记录"
+            @click="handleRecycleCrumb({ rel: '' })"
+          >丢失的文件</span>
+          <template v-for="(crumb, index) in recycleBreadcrumb" :key="crumb.rel">
+            <span class="video-crumb-sep">›</span>
+            <span
+              class="video-crumb"
+              :class="{ 'is-current': index === recycleBreadcrumb.length - 1 }"
+              :title="crumb.label"
+              @click="handleRecycleCrumb(crumb)"
+            >{{ crumb.label }}</span>
+          </template>
+          <span class="video-recycle-count">共 {{ missingVideoCount }} 个丢失文件</span>
+        </div>
+
         <div class="video-path-actions">
           <span v-if="videoIsScanning" class="video-status is-scanning">扫描中…</span>
           <span v-else-if="videoHasRoots && !videoWatcherHealthy" class="video-status is-warn" title="目录监听不可用，请用「重新扫描」手动刷新">
@@ -66,7 +89,11 @@
             :title="showFolderCards ? '当前会显示文件夹卡片，点击隐藏' : '当前隐藏了文件夹卡片，点击显示'"
             @click="toggleShowFolderCards"
           >{{ showFolderCards ? '📁 文件夹' : '📁 文件夹（已隐藏）' }}</button>
-          <button v-if="videoBreadcrumb.length > 1" class="video-mini-btn" @click="handleGoUp">⬆ 上一级</button>
+          <button
+            v-if="isRecycleBinMode ? !!videoRecycleRel : videoBreadcrumb.length > 1"
+            class="video-mini-btn"
+            @click="handleGoUp"
+          >⬆ 上一级</button>
           <button class="video-mini-btn" @click="handleRescanVideoLibrary">🔄 重新扫描</button>
         </div>
       </div>
@@ -85,14 +112,17 @@
         :customStyle="customLayoutStyle"
         :class="{ 'is-dragging': isDragOver }"
       >
-        <!-- 文件夹卡片（视频页专属：单击进入子层级；标签并集用于筛选下的可见性） -->
+        <!-- 文件夹卡片（视频页专属：单击进入子层级；标签并集用于筛选下的可见性）
+             回收站里的 kind === 'missing' 卡片代表"磁盘上已经找不到的原目录"，
+             右键它可以把整个文件夹（含里面全部文件）重新关联到新位置。 -->
         <div
           v-for="folder in (isVideoPage ? visibleFolderCards : [])"
           :key="folder.key"
           class="video-folder-card"
-          :class="{ 'is-root': folder.kind === 'root' }"
-          :title="folder.tags && folder.tags.length > 0 ? `${folder.fullPath}\n标签：${folder.tags.join('、')}` : folder.fullPath"
+          :class="{ 'is-root': folder.kind === 'root', 'is-missing': folder.kind === 'missing' }"
+          :title="folderCardTitle(folder)"
           @click="handleFolderClick(folder)"
+          @contextmenu.prevent="handleFolderContextMenu($event, folder)"
         >
           <button
             v-if="folder.kind === 'root'"
@@ -100,19 +130,22 @@
             title="解除绑定（不会删除记录与标签）"
             @click.stop="handleUnbindRoot(folder)"
           >✕</button>
-          <div class="folder-icon">{{ folder.kind === 'root' ? '📂' : '📁' }}</div>
+          <div class="folder-icon">{{ folder.kind === 'root' ? '📂' : (folder.kind === 'missing' ? '🗑️' : '📁') }}</div>
           <div class="folder-name">{{ folder.name }}</div>
           <div v-if="folder.tags && folder.tags.length > 0" class="folder-tags">
             <span v-for="tag in folder.tags.slice(0, 3)" :key="tag" class="folder-tag">{{ tag }}</span>
             <span v-if="folder.tags.length > 3" class="folder-tag-more">+{{ folder.tags.length - 3 }}</span>
           </div>
           <div class="folder-meta">
-            <span>{{ folder.count }} 个视频</span>
+            <span v-if="folder.kind === 'missing'">{{ folder.count }} 个丢失文件</span>
+            <span v-else>{{ folder.count }} 个视频</span>
             <button
+              v-if="folder.kind !== 'missing'"
               class="folder-open"
               title="在资源管理器中打开"
               @click.stop="handleOpenFolderInExplorer(folder)"
             >↗</button>
+            <span v-else class="folder-hint" title="右键这张卡片 → 整个文件夹重新关联到…">右键重连</span>
           </div>
         </div>
 
@@ -167,6 +200,14 @@
         />
       </template>
     </DetailPanel>
+
+    <!-- 回收站里文件夹卡片的右键菜单（整夹重新关联到…） -->
+    <fun-context-menu
+      :visible="folderMenuVisible"
+      :position="folderMenuPosition"
+      :menu-items="folderMenuItems"
+      @item-click="handleFolderMenuItemClick"
+    />
     
     <!-- 添加资源对话框 -->
     <ResourcesEditDialog
@@ -310,7 +351,11 @@ import { useResourceFilter } from '../composables/useResourceFilter'
 // 视频页专用：绑定文件夹 / 递归扫描同步 / 层级浏览 / 实时监听 / 打开次数 / 抽帧封面
 import { useVideoLibrary } from '../composables/video/useVideoLibrary'
 // 视频页：文件夹在标签筛选/搜索下的可见性（纯函数）
-import { filterVisibleFolders } from '../utils/videoFolderFilter'
+import { filterVisibleFolders, folderContainsVideo } from '../utils/videoFolderFilter'
+// 视频页：丢失记录判定（「主视图只显示磁盘上真实存在的视频」用它把关）
+import { isMissingItem } from '../utils/videoRelink'
+// 视频页：主视图到底显示哪些视频（子树筛选池 → 收窄到当前层；纯函数）
+import { filterVisibleVideoItems } from '../utils/videoVisibility'
 import { collectSearchTexts, matchesFuzzy } from '../utils/fuzzySearch'
 // 编辑对话框按字段名取候选，这里把「筛选器 key → 字段名」的映射补齐
 import { buildTagsByField } from '../utils/filterFieldMap'
@@ -1049,6 +1094,14 @@ export default defineComponent({
           { key: 'batchDelete', icon: '🗑️', label: '批量删除文件' }
         ]
       } else {
+        // 回收站里：文件在磁盘上已经没有了，只留「详情 / 重新关联 / 编辑」
+        if (isVideoPage.value && isRecycleBinMode.value) {
+          return [
+            { key: 'detail', icon: '👁️', label: '查看详情' },
+            { key: 'relink', icon: '🔗', label: '重新关联到…' },
+            { key: 'edit', icon: '✏️', label: '编辑信息' }
+          ]
+        }
         return [...(ResourceClass.contextMenuItems || [])]
       }
     })
@@ -1072,8 +1125,24 @@ export default defineComponent({
       }
     })
 
-    // 视频页：筛选/排序/分页只作用于「当前层」的视频；其它页面照旧用全量
-    const itemsForFilter = isVideoPage.value ? videoLib.scopedItems : items
+    // 视频页：筛选/排序/分页只作用于「当前范围」；其它页面照旧用全量。
+    //
+    // ⚠️ 这里故意用**子树**（scopePool），不是「当前这一层」：
+    //    主人 2026-10-05 报的「文件夹里只有子文件夹时左侧筛选显示空」，
+    //    根因就是筛选池只有这一层的直接子文件。
+    //    真正"只显示当前层"的收窄在下面 filteredItems 的显示闸门里做。
+    //
+    // 回收站模式下池子换成「丢失的记录」——左栏的标签/作者/格式跟着回收站内容走。
+    const recycleSelectedRef: any = { value: null }
+    const isRecycleBinMode = computed(() => {
+      if (!isVideoPage.value) return false
+      const selected = recycleSelectedRef.value?.value
+      return Array.isArray(selected) && selected.length > 0
+    })
+    const itemsForFilter = computed<any[]>(() => {
+      if (!isVideoPage.value) return items.value
+      return isRecycleBinMode.value ? videoLib.missingItems.value : videoLib.scopePool.value
+    })
 
     // 使用通用筛选 composable（传入页面配置 ID 和额外数据）
     const filterComposable = useResourceFilter(
@@ -1091,6 +1160,12 @@ export default defineComponent({
           : []
       }
     )
+
+    // 左栏「丢失的文件」这一项选中 = 进回收站。这里直接把它的 selected ref 抓住，
+    // 让上面的筛选池跟着切换（顺序上必须等 useResourceFilter 建好状态之后才拿得到）。
+    if (isVideoPage.value) {
+      recycleSelectedRef.value = (filterComposable as any).filterStates?.['missing-resources']?.selected || null
+    }
     
     // 从筛选器状态中获取所有标签（用于编辑对话框，兼容单一口径）
     const allTags = computed<FilterItem[]>(() => {
@@ -1112,18 +1187,43 @@ export default defineComponent({
       return buildTagsByField(pageConfig.value?.filterConfig || [], itemsByFilterKey) as Record<string, FilterItem[]>
     })
 
+    /**
+     * 把「丢失的文件」这一项的计数改成**当前范围内全部丢失记录**的数量。
+     *
+     * 为什么不能交给 extractFn 自己数：筛选池（scopePool）里只有"当前层子树"，
+     * 而丢失记录要按整棵子树算 —— 但池子若把丢失记录也算进标签候选，
+     * 又会出现"标签是丢失文件上的、点进去主视图却什么都没有"。
+     * 所以标签/作者照旧只看存在的东西，丢失计数这里单独补上。
+     */
+    const applyMissingCount = (data: any) => {
+      if (!data?.filters || !isVideoPage.value) return
+      const count = videoLib.missingItems.value.length
+      const label = pageConfig.value?.filterConfig
+        ?.find((config: any) => config.key === 'missing-resources')?.params?.missingLabel || '丢失的文件'
+      data.filters = data.filters.map((filter: any) => {
+        if (filter.key !== 'missing-resources') return filter
+        const items = Array.isArray(filter.items) && filter.items.length > 0
+          ? [{ ...filter.items[0], count }]
+          : [{ name: label, count }]
+        return { ...filter, items }
+      })
+    }
+
     /** 重新提取筛选器数据并推给左侧栏（视频库扫描/切换目录后必须刷新，否则左栏是旧数据） */
     const refreshFilterData = () => {
       try {
         filterComposable.extractAllFilters?.()
         const data = filterComposable.getFilterData?.()
-        if (data) emit('filter-data-updated', data)
+        if (data) {
+          applyMissingCount(data)
+          emit('filter-data-updated', data)
+        }
       } catch (error) {
         console.warn('[GenericResourceView] 刷新筛选器数据失败:', error)
       }
     }
 
-    // 视频页：扫描完成或切换目录后刷新左栏筛选器
+    // 视频页：扫描完成、切换目录、进出回收站后刷新左栏筛选器
     if (isVideoPage.value) {
       watch(
         () => [videoLib.lastScanAt.value, videoLib.currentRoot.value, videoLib.currentRel.value],
@@ -1131,6 +1231,10 @@ export default defineComponent({
           refreshFilterData()
         }
       )
+      watch(isRecycleBinMode, (inRecycleBin) => {
+        if (inRecycleBin) videoLib.resetRecycle()
+        refreshFilterData()
+      })
     }
 
     // 终止游戏方法
@@ -1342,8 +1446,24 @@ export default defineComponent({
     }
 
     // 使用筛选 composable 的 filteredItems（已经是响应式的）
-    // 直接使用 filterComposable.filteredGames，确保引用正确
-    const filteredItems = filterComposable.filteredGames
+    //
+    // 视频页的「显示闸门」（主人 2026-10-05 需求：主视图与文件目录强绑定）：
+    //   - 普通模式：只要**磁盘上真实存在**、且正好在当前这一层的视频；
+    //     丢失的记录一律不进主视图 —— 它们只出现在左栏「丢失的文件」（回收站）里。
+    //   - 回收站模式：只要回收站当前钻到的那一层里的丢失记录。
+    // 筛选池是子树（为了让左栏筛选有数据），所以这里必须再收窄一次。
+    // 判定逻辑抽在 utils/videoVisibility.ts 里，方便单测。
+    const rawFilteredItems = filterComposable.filteredGames
+    const filteredItems = computed<any[]>(() => filterVisibleVideoItems(rawFilteredItems.value || [], {
+      recycleMode: isRecycleBinMode.value,
+      recycleRel: videoLib.recycleRel.value,
+      isMissing: isMissingItem,
+      isAtCurrentLevel: videoLib.isAtCurrentLevel,
+      relativeFolderOf: videoLib.relativeFolderOf
+    }))
+    // 下游（分页、空状态判定、模板）统一用这份收窄后的列表
+    ;(filterComposable as any).filteredGames = filteredItems
+    ;(filterComposable as any).filteredItems = filteredItems
     
 
     // 监听 items 变化，自动提取筛选器数据（完全按照 ImageView 的方式）
@@ -1936,7 +2056,13 @@ export default defineComponent({
         notify.toast('warning', '批量抽帧', '请先选择要操作的视频')
         return
       }
-      await videoLib.grabCoverBatch(targets)
+      // 回收站里选中的记录文件都不在了，抽帧必然全失败 —— 提前说清楚
+      const alive = targets.filter((item: any) => !isMissingItem(item))
+      if (alive.length === 0) {
+        notify.toast('warning', '批量抽帧', '选中的文件在磁盘上都已经找不到了（可右键「重新关联到…」先把文件接回来）')
+        return
+      }
+      await videoLib.grabCoverBatch(alive)
     }
 
     // 通用的文件存在性检查函数
@@ -2733,11 +2859,15 @@ export default defineComponent({
     /**
      * 当前是否有生效中的搜索/筛选。
      * 这决定空状态该说「没找到匹配」还是「这一层本来就没有」。
+     *
+     * ⚠️ 「丢失的文件」这一项不算：它是"进回收站"的开关，不是筛选条件。
+     *    不排掉的话，回收站里永远会被判成"有筛选生效"，空状态文案就永远是"没找到匹配"。
      */
     const hasActiveSearchOrFilter = computed(() => {
       if (String(searchQuery.value || '').trim() !== '') return true
       const states = (filterComposable as any).filterStates || {}
       return Object.keys(states).some(key => {
+        if (key === 'missing-resources') return false
         const state = states[key]
         return (state?.selected?.value?.length || 0) > 0 || (state?.excluded?.value?.length || 0) > 0
       })
@@ -2749,9 +2879,41 @@ export default defineComponent({
      * 修的坑（主人 2026-10-04 反馈）：某一层**只有文件夹、没有视频**时，
      * BaseView 只看「items 有值但 filteredItems 为空」，于是弹出一块
      * 「没有找到匹配的视频 / 尝试使用不同的搜索词」盖在文件夹卡片上 —— 明明是正常的目录层。
+     *
+     * 后来又补了回收站（主人 2026-10-05）：丢了东西时别再说"这一层没有视频"。
      */
     const emptyStateOverride = computed(() => {
       if (!isVideoPage.value) return undefined
+
+      // ===== 回收站 =====
+      if (isRecycleBinMode.value) {
+        if (filterComposable.filteredGames.value.length > 0) return null
+        if (visibleFolderCards.value.length > 0) return null
+        if (hasActiveSearchOrFilter.value) {
+          return {
+            icon: '🔍',
+            title: '回收站里没有匹配的文件',
+            description: '换个搜索词，或把左栏的标签筛选清掉再试',
+            showButton: false
+          }
+        }
+        if (videoLib.missingItems.value.length > 0) {
+          return {
+            icon: '♻️',
+            title: '这一层没有丢失的文件',
+            description: showFolderCards.value
+              ? '丢失的文件按"原来的目录"分组，点上方面包屑回到上一层看看'
+              : '文件夹卡片被你隐藏了；先点上方「📁 文件夹」把它们显示出来，就能看到按原目录分组的丢失文件',
+            showButton: false
+          }
+        }
+        return {
+          icon: '✅',
+          title: '回收站是空的',
+          description: '没有文件丢失。主视图只会显示磁盘上真实存在的视频；被改名/移动/删除的文件会落在这里，右键文件夹可以整夹重新关联回来',
+          showButton: false
+        }
+      }
 
       // 有搜索/筛选：没结果才是真的「没找到」
       if (hasActiveSearchOrFilter.value) {
@@ -2783,6 +2945,15 @@ export default defineComponent({
 
       // 这一层真的什么都没有（没视频也没子文件夹）
       if (videoLib.scopedItems.value.length === 0) {
+        // 但子树里可能有"丢了的文件"——顺手指路到回收站，别让用户以为文件凭空没了
+        if (videoLib.missingItems.value.length > 0) {
+          return {
+            icon: '♻️',
+            title: '这一层没有视频了',
+            description: `这棵目录树里有 ${videoLib.missingItems.value.length} 个文件在磁盘上已经找不到了；左栏点「丢失的文件」进回收站看看，右键文件夹可以整夹重新关联回来`,
+            showButton: false
+          }
+        }
         return {
           icon: '📂',
           title: '这一层没有视频',
@@ -2839,17 +3010,30 @@ export default defineComponent({
     }
 
     /**
-     * 当前层里、直接属于某个文件夹卡片的视频。
-     *  - folder 卡片：rootPath 相同、且所在目录正好等于卡片 rel
-     *  - root 卡片：rootPath 相同、且就在根目录下（rel 无斜杠）
+     * 某个文件夹卡片**子树**里的视频。
+     *  - folder 卡片：rootPath 相同、且所在目录在卡片 rel 之下（含自身）
+     *  - root 卡片：rootPath 相同（整棵根目录树）
+     *  - missing 卡片：回收站里按"原目录"重建的树，同样按子树算
+     *
+     * 2026-10-05 改：原来是"只看直接子级"，于是
+     *   「搜索命中的视频在更深一层」时上层文件夹会被隐藏，「只有子文件夹」的目录层左栏也是空的。
+     *   口径与 collectFolderTags（标签并集）保持一致，都按子树。
      */
-    const directVideosOfFolder = (folder: any): any[] => {
+    const videosInsideFolder = (folder: any): any[] => {
+      if (!folder) return []
+      if (folder.kind === 'missing') {
+        const rel = folder.rel || ''
+        return videoLib.missingItems.value.filter((item: any) => {
+          const itemRel = videoLib.relativeFolderOf(item)
+          return itemRel === rel || itemRel.startsWith(rel + '/')
+        })
+      }
       const rootKey = pathKeyOf(folder.root)
       return (items.value || []).filter((item: any) => {
+        if (isMissingItem(item)) return false // 主视图的文件夹只由真实存在的文件撑起来
         const itemRoot = String(BaseResources.extractPrimitiveValue(item?.rootPath) || '')
         if (pathKeyOf(itemRoot) !== rootKey) return false
-        const folderPath = folderPathOfVideo(item)
-        return folder.kind === 'folder' ? folderPath === (folder.rel || '') : folderPath === ''
+        return folderContainsVideo(folder.rel || '', folderPathOfVideo(item))
       })
     }
 
@@ -2858,14 +3042,40 @@ export default defineComponent({
       if (!isVideoPage.value) return []
       if (!showFolderCards.value) return []
 
-      return filterVisibleFolders(videoLib.folderCards.value, {
+      const source = isRecycleBinMode.value ? videoLib.recycleFolderCards.value : videoLib.folderCards.value
+      return filterVisibleFolders(source, {
         query: String(searchQuery.value || '').trim(),
         tagFilter: activeTagFilter.value,
         matchVideo: matchVideoByQuery,
         tagsOfVideo,
-        directVideosOf: directVideosOfFolder
+        videosInsideOf: videosInsideFolder
       })
     })
+
+    /* --------------------- 视频页：回收站（丢失的文件）UI --------------------- */
+
+    /** 回收站当前钻到的层级（相对当前浏览层） */
+    const videoRecycleRel = videoLib.recycleRel
+
+    /** 回收站面包屑（「丢失的文件 › 原目录 › …」） */
+    const recycleBreadcrumb = computed<Array<{ label: string, rel: string }>>(() => {
+      const rel = videoLib.recycleRel.value
+      if (!rel) return []
+      const segments = rel.split('/').filter(Boolean)
+      let acc = ''
+      return segments.map(segment => {
+        acc = acc ? `${acc}/${segment}` : segment
+        return { label: segment, rel: acc }
+      })
+    })
+
+    /** 当前范围内丢失文件的总数（左栏计数 / 回收站提示用） */
+    const missingVideoCount = computed(() => videoLib.missingItems.value.length)
+
+    /** 回收站面包屑跳转（rel === '' 表示回到"丢失的文件"顶层） */
+    const handleRecycleCrumb = (crumb: { rel: string }) => {
+      videoLib.setRecycleRel(crumb?.rel || '')
+    }
 
     /** 「显示文件夹」开关（记在本地） */
     const toggleShowFolderCards = () => {
@@ -2881,8 +3091,12 @@ export default defineComponent({
     const videoHasRoots = videoLib.hasRoots
     const videoFfmpegAvailable = computed(() => !!videoLib.ffmpegInfo.value?.available)
 
-    /** 进入子目录 */
+    /** 进入子目录 / 进入回收站里的"原目录" */
     const handleFolderClick = (folder: any) => {
+      if (folder?.kind === 'missing') {
+        videoLib.setRecycleRel(folder.rel || '')
+        return
+      }
       videoLib.enterFolder(folder)
       resourcePage.resetToFirstPage?.()
     }
@@ -2893,10 +3107,68 @@ export default defineComponent({
       resourcePage.resetToFirstPage?.()
     }
 
-    /** 返回上一级 */
+    /** 返回上一级（回收站里就是退回上一层"原目录"） */
     const handleGoUp = () => {
+      if (isRecycleBinMode.value) {
+        const rel = videoLib.recycleRel.value
+        if (!rel) return
+        const segments = rel.split('/')
+        segments.pop()
+        videoLib.setRecycleRel(segments.join('/'))
+        return
+      }
       videoLib.goUp()
       resourcePage.resetToFirstPage?.()
+    }
+
+    /* -------- 回收站文件夹卡片的右键菜单（整夹重新关联） -------- */
+
+    const folderMenuVisible = ref(false)
+    const folderMenuPosition = ref({ x: 0, y: 0 })
+    const folderMenuFolder = ref<any>(null)
+
+    const folderMenuItems = computed(() => {
+      const folder = folderMenuFolder.value
+      const count = folder?.count || 0
+      return [
+        { key: 'relink-folder', icon: '🔗', label: `整个文件夹重新关联到…（${count} 个文件）` }
+      ]
+    })
+
+    /** 只有回收站里的"原目录"卡片需要右键菜单 */
+    const handleFolderContextMenu = (event: MouseEvent, folder: any) => {
+      if (folder?.kind !== 'missing') return
+      folderMenuFolder.value = folder
+      folderMenuPosition.value = { x: event.clientX, y: event.clientY }
+      folderMenuVisible.value = true
+    }
+
+    const handleFolderMenuItemClick = async (menuItem: any) => {
+      folderMenuVisible.value = false
+      const folder = folderMenuFolder.value
+      if (!folder) return
+      if (menuItem?.key === 'relink-folder') {
+        await videoLib.relinkMissingFolder(folder)
+        refreshFilterData()
+      }
+    }
+
+    const closeFolderMenu = () => {
+      folderMenuVisible.value = false
+    }
+    onMounted(() => document.addEventListener('click', closeFolderMenu))
+    onBeforeUnmount(() => document.removeEventListener('click', closeFolderMenu))
+
+    /** 文件夹卡片 tooltip */
+    const folderCardTitle = (folder: any) => {
+      if (!folder) return ''
+      const tagText = folder.tags && folder.tags.length > 0
+        ? `\n标签（含子文件夹）：${folder.tags.slice(0, 20).join('、')}${folder.tags.length > 20 ? '…' : ''}`
+        : ''
+      if (folder.kind === 'missing') {
+        return `${folder.fullPath}\n（磁盘上已经找不到这个目录了）\n共 ${folder.count} 个丢失文件 · 右键可整夹重新关联回来${tagText}`
+      }
+      return `${folder.fullPath}${tagText}`
     }
 
     /** 解除绑定（只解除绑定，不删记录、不碰文件） */
@@ -2948,6 +3220,8 @@ export default defineComponent({
       toggleShowFolderCards,
       // 视频页的空状态覆盖（文件夹层不再被「没有找到匹配的视频」盖住）
       emptyStateOverride,
+      // 「丢失的文件」计数注入（左栏刷新时用，见 methods.updateFilterData）
+      applyMissingCount,
       videoIsScanning,
       videoWatcherHealthy,
       videoHasRoots,
@@ -2959,6 +3233,18 @@ export default defineComponent({
       handleOpenFolderInExplorer,
       handleRescanVideoLibrary,
       handleBindVideoFolder,
+      // ===== 回收站（丢失的文件）=====
+      isRecycleBinMode,
+      videoRecycleRel,
+      recycleBreadcrumb,
+      missingVideoCount,
+      handleRecycleCrumb,
+      folderCardTitle,
+      folderMenuVisible,
+      folderMenuPosition,
+      folderMenuItems,
+      handleFolderContextMenu,
+      handleFolderMenuItemClick,
       // 卡片主操作按钮的统一派发（视频→openVideo，游戏→launchExecutable）
       handleCardAction,
       // 多选模式相关
@@ -3164,6 +3450,10 @@ export default defineComponent({
             excluded: developersFilter.excluded,
             itemsCount: developersFilter.itemsCount
           })
+        }
+        // 视频页：「丢失的文件」计数要单独补上（筛选池里不含丢失记录，extractFn 数不出来）
+        if (typeof (this as any).applyMissingCount === 'function') {
+          (this as any).applyMissingCount(filterData)
         }
         this.$emit('filter-data-updated', filterData)
       } else {
@@ -3691,6 +3981,36 @@ export default defineComponent({
     border-style: solid;
     border-color: var(--accent-color, #66c0f4);
   }
+
+  /* 回收站里的"原目录"：磁盘上已经不存在了，用虚线 + 暖色提示 */
+  &.is-missing {
+    border-color: rgba(245, 158, 11, 0.55);
+
+    .folder-icon {
+      filter: saturate(0.6);
+      opacity: 0.85;
+    }
+
+    &:hover {
+      border-color: #f59e0b;
+    }
+  }
+}
+
+/* 回收站面包屑的计数提示 */
+.video-recycle-count {
+  margin-left: 6px;
+  font-size: 0.76rem;
+  color: var(--text-tertiary);
+}
+
+.folder-hint {
+  font-size: 0.7rem;
+  color: rgba(245, 158, 11, 0.9);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 8px;
+  padding: 0 6px;
+  cursor: help;
 }
 
 .folder-icon {

@@ -284,6 +284,82 @@ describe('statVideoFiles', () => {  it('分别回报存在与不存在', async (
   })
 })
 
+/* -------------------------------------------------------------------------- */
+/* 整夹重连：resolveRelinkFolderBatch                                          */
+/* -------------------------------------------------------------------------- */
+
+describe('resolveRelinkFolderBatch（整个文件夹重新关联）', () => {
+  it('按内层相对路径对号入座（原目录被改名成新目录）', () => {
+    const renamed = path.join(libraryRoot, '合集A2')
+    touch(path.join(renamed, '01.mkv'))
+    touch(path.join(renamed, 'deep', '02.mkv'))
+
+    const result = videoUtils.resolveRelinkFolderBatch([libraryRoot], renamed, [
+      { id: 'v1', innerRel: '01.mkv', fileName: '01.mkv' },
+      { id: 'v2', innerRel: 'deep/02.mkv', fileName: '02.mkv' }
+    ])
+
+    expect(result.ok).toBe(true)
+    expect(result.results).toHaveLength(2)
+    expect(result.results[0].ok).toBe(true)
+    expect(result.results[0].path).toBe(path.join(renamed, '01.mkv'))
+    expect(result.results[0].relPath).toBe('合集A2/01.mkv')
+    expect(result.results[0].usedFallback).toBe(false)
+    expect(result.results[1].relPath).toBe('合集A2/deep/02.mkv')
+  })
+
+  it('首选路径不在时退一步按文件名找（用户把里面的文件摊平了）', () => {
+    const flat = path.join(libraryRoot, '摊平了')
+    touch(path.join(flat, '01.mkv'))
+
+    const result = videoUtils.resolveRelinkFolderBatch([libraryRoot], flat, [
+      { id: 'v1', innerRel: '上一层/01.mkv', fileName: '01.mkv' }
+    ])
+
+    expect(result.results[0].ok).toBe(true)
+    expect(result.results[0].usedFallback).toBe(true)
+    expect(result.results[0].path).toBe(path.join(flat, '01.mkv'))
+  })
+
+  it('两条都找不到 → 单条报 not-found，其余照旧成功', () => {
+    const partial = path.join(libraryRoot, '只回来一个')
+    touch(path.join(partial, '01.mkv'))
+
+    const result = videoUtils.resolveRelinkFolderBatch([libraryRoot], partial, [
+      { id: 'v1', innerRel: '01.mkv', fileName: '01.mkv' },
+      { id: 'v2', innerRel: '02.mkv', fileName: '02.mkv' }
+    ])
+
+    expect(result.results[0].ok).toBe(true)
+    expect(result.results[1].ok).toBe(false)
+    expect(result.results[1].reason).toBe('not-found')
+  })
+
+  it('新文件夹必须在某个绑定根目录里（否则下次扫描又会被标丢失）', () => {
+    const outside = path.join(tempRoot, '根目录之外')
+    touch(path.join(outside, '01.mkv'))
+
+    const result = videoUtils.resolveRelinkFolderBatch([libraryRoot], outside, [
+      { id: 'v1', innerRel: '01.mkv', fileName: '01.mkv' }
+    ])
+
+    expect(result.ok).toBe(true)
+    expect(result.results[0].ok).toBe(false)
+    expect(result.results[0].reason).toBe('not-found')
+  })
+
+  it('目录不存在 / 选了文件 / 内层路径越界 都要明确拒绝', () => {
+    expect(videoUtils.resolveRelinkFolderBatch([libraryRoot], path.join(tempRoot, '没有这个目录'), []).ok).toBe(false)
+    expect(videoUtils.resolveRelinkFolderBatch([libraryRoot], path.join(libraryRoot, 'a.mp4'), []).ok).toBe(false)
+
+    const evil = videoUtils.resolveRelinkFolderBatch([libraryRoot], libraryRoot, [
+      { id: 'v1', innerRel: '../逃出去.mp4', fileName: '逃出去.mp4' }
+    ])
+    expect(evil.results[0].ok).toBe(false)
+    expect(evil.results[0].reason).toBe('bad-relative-path')
+  })
+})
+
 describe('ffmpeg 抽帧（本机装了 ffmpeg 才跑）', () => {
   const info = videoUtils.findFfmpeg()
 

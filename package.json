@@ -1,6 +1,6 @@
 {
   "name": "green-game-vault",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "GreenGameVault —— 轻量本地游戏库管理器，支持标签管理、游戏内截图与视频库（绑定文件夹 / 抽帧封面 / 打开次数）",
   "main": "electron/main.js",
   "homepage": "./",

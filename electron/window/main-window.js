@@ -137,16 +137,31 @@ function createMainWindow(isDev, getMinimizeToTrayEnabled, getSystemTray, displa
   
   if (isDev) {
     // 开发环境：加载Vite开发服务器
-    console.log('正在加载: http://localhost:5173')
-    mainWindow.loadURL('http://localhost:5173').catch(err => {
+    const devUrl = process.env.GGV_DEV_URL || 'http://localhost:5173'
+    console.log('正在加载:', devUrl)
+    mainWindow.loadURL(devUrl).catch(err => {
       console.error('加载失败:', err)
       // 如果Vite服务器还没启动，等待一下再重试
       setTimeout(() => {
         if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.loadURL('http://localhost:5173').catch(console.error)
+          mainWindow.loadURL(devUrl).catch(console.error)
         }
       }, 2000)
     })
+
+    // [本地测试钩子] 只从源码跑（!app.isPackaged）时才认这两个环境变量：
+    //   GGV_DEV_URL      —— 覆盖开发环境加载的地址（例如带上 #/videos 直接进某个页面）
+    //   GGV_SMOKE_SCRIPT —— 页面加载完把这段脚本丢进渲染层执行，用于端到端冒烟
+    // 打包后的应用永远不满足 !app.isPackaged，所以这两个钩子进不了发行版。
+    if (!app.isPackaged && process.env.GGV_SMOKE_SCRIPT) {
+      mainWindow.webContents.once('did-finish-load', () => {
+        setTimeout(() => {
+          mainWindow.webContents.executeJavaScript(process.env.GGV_SMOKE_SCRIPT)
+            .then(result => console.log('[SMOKE] ' + JSON.stringify(result, null, 1)))
+            .catch(error => console.log('[SMOKE] 执行失败: ' + (error && error.message)))
+        }, Number(process.env.GGV_SMOKE_DELAY || 25000))
+      })
+    }
   } else {
     // ============================================================================
     // 生产环境：加载构建后的文件

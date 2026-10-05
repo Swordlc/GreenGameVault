@@ -2,14 +2,20 @@
  * 视频「文件夹」在标签筛选 / 搜索下的可见性测试
  *
  * 主人 2026-10-04 的需求：
- *   「文件夹（仅本身，不含上下级）拥有其内视频标签的并集；这样在筛选条件下仍能显示文件夹」
+ *   「文件夹拥有其内视频标签的并集；这样在筛选条件下仍能显示文件夹」
+ *
+ * 主人 2026-10-05 修正口径（第 1 个问题）：
+ *   「当文件夹内部只有子文件夹时（嵌套层级），左侧筛选显示空」——
+ *   所以并集与搜索命中判定都改成按**子树**（含更深层级），不再只看直接子级。
  */
 import { describe, it, expect } from 'vitest'
 import {
   collectFolderTags,
   filterVisibleFolders,
+  folderContainsVideo,
   folderNameMatches,
   isFolderVisible,
+  normalizeFolderPath,
   satisfiesFolderTagFilter,
   type FolderLike
 } from '../utils/videoFolderFilter'
@@ -68,29 +74,37 @@ describe('satisfiesFolderTagFilter（并集语义）', () => {
   })
 })
 
-describe('collectFolderTags（只取直接子级，不含上下级）', () => {
+describe('collectFolderTags（子树：含自身与所有下级）', () => {
   const videos = [
     makeVideo(ROOT, '根下的.mp4', ['根标签']),
     makeVideo(ROOT, '子目录A\\a1.mp4', ['3D作品', '收藏']),
     makeVideo(ROOT, '子目录A\\a2.mp4', ['2D作品']),
-    // 更深一层：不该算进「子目录A」的并集
+    // 更深一层：**要**算进「子目录A」的并集（嵌套层级的口径）
     makeVideo(ROOT, '子目录A\\深层B\\b1.mp4', ['深层标签']),
-    // 兄弟目录：也不该算
+    // 兄弟目录：不该算
     makeVideo(ROOT, '子目录C\\c1.mp4', ['另一个标签'])
   ]
 
-  it('folder 卡片：只并集它**直接**包含的视频标签，不含更深一层', () => {
+  it('folder 卡片：并集整棵子树（含更深层级）的标签', () => {
     const tags = collectFolderTags(videos, makeFolder(), folderPathOf, rootOf, tagsOf)
-    expect(tags).toEqual(['2D作品', '3D作品', '收藏'].sort((a, b) => a.localeCompare(b, 'zh-CN')))
-    expect(tags).not.toContain('深层标签')
+    expect(tags).toEqual(['2D作品', '3D作品', '深层标签', '收藏'].sort((a, b) => a.localeCompare(b, 'zh-CN')))
     expect(tags).not.toContain('根标签')
     expect(tags).not.toContain('另一个标签')
   })
 
-  it('root 卡片：只并集「直接散在根目录下」的视频标签', () => {
+  it('root 卡片：并集整个根目录下的标签（含所有子文件夹）', () => {
     const rootCard = makeFolder({ kind: 'root', name: ROOT, rel: '', fullPath: ROOT })
     const tags = collectFolderTags(videos, rootCard, folderPathOf, rootOf, tagsOf)
-    expect(tags).toEqual(['根标签'])
+    // 兄弟目录 子目录C 也在同一个根下，所以「另一个标签」也要算进来
+    expect(tags).toEqual(
+      ['2D作品', '3D作品', '深层标签', '根标签', '收藏', '另一个标签'].sort((a, b) => a.localeCompare(b, 'zh-CN'))
+    )
+  })
+
+  it('「只有子文件夹、视频全在更深处」的目录也有标签（主人报的那个空左栏）', () => {
+    const nested = [makeVideo(ROOT, '外层\\内层\\深一层\\x.mp4', ['深层标签'])]
+    const outer = makeFolder({ name: '外层', rel: '外层' })
+    expect(collectFolderTags(nested, outer, folderPathOf, rootOf, tagsOf)).toEqual(['深层标签'])
   })
 
   it('去重且稳定排序，空标签被忽略', () => {
@@ -107,13 +121,30 @@ describe('collectFolderTags（只取直接子级，不含上下级）', () => {
   })
 })
 
+describe('目录包含判定（正/反斜杠都能比）', () => {
+  it('normalizeFolderPath 统一分隔符并去掉首尾斜杠', () => {
+    expect(normalizeFolderPath('\\A\\B\\')).toBe('A/B')
+    expect(normalizeFolderPath('/A/B/')).toBe('A/B')
+    expect(normalizeFolderPath('')).toBe('')
+  })
+
+  it('folderContainsVideo：自身与更深层级都算，兄弟目录不算', () => {
+    expect(folderContainsVideo('A', 'A')).toBe(true)
+    expect(folderContainsVideo('A', 'A/B')).toBe(true)
+    expect(folderContainsVideo('A', 'A/B/C')).toBe(true)
+    expect(folderContainsVideo('A', 'AB')).toBe(false) // 前缀相同但不是子目录
+    expect(folderContainsVideo('A', 'A2/B')).toBe(false)
+    expect(folderContainsVideo('', '任意/层级')).toBe(true) // 根卡片
+  })
+})
+
 describe('isFolderVisible', () => {
   const baseCtx = {
     query: '',
     tagFilter: { include: [], exclude: [] },
     matchVideo: () => true,
     tagsOfVideo: tagsOf,
-    directVideosOf: () => []
+    videosInsideOf: () => []
   }
 
   it('没搜索、没筛选 → 全都显示', () => {
@@ -132,7 +163,7 @@ describe('isFolderVisible', () => {
     expect(isFolderVisible(folder, {
       ...baseCtx,
       query: '3D',
-      directVideosOf: () => []
+      videosInsideOf: () => []
     })).toBe(true)
   })
 
@@ -142,24 +173,24 @@ describe('isFolderVisible', () => {
       ...baseCtx,
       query: '第二部',
       matchVideo: (video: any) => String(video.name).includes('第二部'),
-      directVideosOf: () => [{ name: '第二部_改名了' }]
+      videosInsideOf: () => [{ name: '第二部_改名了' }]
     }
     expect(isFolderVisible(folder, hitCtx)).toBe(true)
 
-    const missCtx = { ...hitCtx, directVideosOf: () => [{ name: '第三个' }] }
+    const missCtx = { ...hitCtx, videosInsideOf: () => [{ name: '第三个' }] }
     expect(isFolderVisible(folder, missCtx)).toBe(false)
   })
 
-  it('搜索时不看子文件夹里的视频（只看直接子级，与标签并集口径一致）', () => {
+  it('搜索时也看子文件夹里的视频（子树口径，否则搜深层文件时上层夹全消失）', () => {
     const folder = makeFolder({ name: '子目录A', tags: [] })
-    // directVideosOf 只给直接子级；这里模拟"命中视频在更深一层"
     const ctx = {
       ...baseCtx,
       query: '深层',
       matchVideo: (video: any) => String(video.name).includes('深层'),
-      directVideosOf: () => []
+      // 这一层的直接子文件是空的，命中的视频在更深一层 —— 文件夹仍要显示
+      videosInsideOf: () => [{ name: '深层里的片子' }]
     }
-    expect(isFolderVisible(folder, ctx)).toBe(false)
+    expect(isFolderVisible(folder, ctx)).toBe(true)
   })
 
   it('搜索 + 标签筛选同时生效', () => {
@@ -169,7 +200,7 @@ describe('isFolderVisible', () => {
       query: '第一',
       tagFilter: { include: ['3D作品'], exclude: [] },
       matchVideo: () => true,
-      directVideosOf: () => [{ name: '第一集' }]
+      videosInsideOf: () => [{ name: '第一集' }]
     }
     // 标签并集不满足 include → 隐藏（即使里面有名字命中的视频）
     expect(isFolderVisible(folder, ctx)).toBe(false)
@@ -196,7 +227,7 @@ describe('folderNameMatches / filterVisibleFolders', () => {
       tagFilter: { include: ['3D作品'], exclude: [] },
       matchVideo: () => true,
       tagsOfVideo: tagsOf,
-      directVideosOf: () => []
+      videosInsideOf: () => []
     }
     expect(filterVisibleFolders(folders, ctx).map(f => f.key)).toEqual(['a', 'c'])
   })
@@ -207,7 +238,7 @@ describe('folderNameMatches / filterVisibleFolders', () => {
       tagFilter: { include: [], exclude: [] },
       matchVideo: () => true,
       tagsOfVideo: tagsOf,
-      directVideosOf: () => []
+      videosInsideOf: () => []
     })).toEqual([])
   })
 })

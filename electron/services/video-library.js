@@ -282,9 +282,29 @@ function registerIpcHandlers(ipcMain, shell, getWebContents) {
     }
   })
 
-  /** 打开文件所在文件夹并选中 */
-  ipcMain.handle('video-reveal', async (event, filePath) => {
+  /**
+   * 「整个文件夹重新关联到…」：用户指认丢失目录的新位置，批量算好每条的字段
+   * 入参：{ roots: string[], folderPath: string, entries: [{id, innerRel, fileName}] }
+   */
+  ipcMain.handle('video-relink-batch', async (event, payload = {}) => {
     try {
+      const result = videoUtils.resolveRelinkFolderBatch(payload.roots, payload.folderPath, payload.entries)
+      const list = result.results || []
+      console.log('[VideoLibrary] video-relink-batch:', {
+        folderPath: result.folderPath,
+        ok: result.ok,
+        total: list.length,
+        relinked: list.filter(item => item.ok).length,
+        error: result.error
+      })
+      return result
+    } catch (error) {
+      return { ok: false, error: error.message }
+    }
+  })
+
+  /** 打开文件所在文件夹并选中 */
+  ipcMain.handle('video-reveal', async (event, filePath) => {    try {
       if (!filePath || !fs.existsSync(filePath)) {
         return { ok: false, message: '文件不存在' }
       }
