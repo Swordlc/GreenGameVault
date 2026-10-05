@@ -94,6 +94,12 @@
             class="video-mini-btn"
             @click="handleGoUp"
           >⬆ 上一级</button>
+          <button
+            v-if="isRecycleBinMode && missingVideoCount > 0"
+            class="video-mini-btn is-danger"
+            :title="`把当前范围里的 ${missingVideoCount} 条丢失记录从库中移除（磁盘上的文件不会动）`"
+            @click="handleClearRecycleBin"
+          >🧹 清空回收站</button>
           <button class="video-mini-btn" @click="handleRescanVideoLibrary">🔄 重新扫描</button>
         </div>
       </div>
@@ -1082,6 +1088,14 @@ export default defineComponent({
       if (isMultiSelectMode.value) {
         // 视频页是「只读标签管理」：批量菜单里**绝不能**出现「批量删除文件」
         if (isVideoPage.value) {
+          // 回收站里：抽帧没有意义（文件都不在了），换成"移除记录"
+          if (isRecycleBinMode.value) {
+            return [
+              { key: 'batchAddTag', icon: '🏷️', label: '批量增加tag' },
+              { key: 'batchDeleteTag', icon: '🏷️', label: '批量删除tag' },
+              { key: 'batchRemoveRecords', icon: '🗑️', label: '批量移除记录（磁盘文件不动）' }
+            ]
+          }
           return [
             { key: 'batchAddTag', icon: '🏷️', label: '批量增加tag' },
             { key: 'batchDeleteTag', icon: '🏷️', label: '批量删除tag' },
@@ -1094,12 +1108,13 @@ export default defineComponent({
           { key: 'batchDelete', icon: '🗑️', label: '批量删除文件' }
         ]
       } else {
-        // 回收站里：文件在磁盘上已经没有了，只留「详情 / 重新关联 / 编辑」
+        // 回收站里：文件在磁盘上已经没有了，只留「详情 / 重新关联 / 编辑 / 移除记录」
         if (isVideoPage.value && isRecycleBinMode.value) {
           return [
             { key: 'detail', icon: '👁️', label: '查看详情' },
             { key: 'relink', icon: '🔗', label: '重新关联到…' },
-            { key: 'edit', icon: '✏️', label: '编辑信息' }
+            { key: 'edit', icon: '✏️', label: '编辑信息' },
+            { key: 'remove-record', icon: '🗑️', label: '从库中移除（磁盘文件不动）' }
           ]
         }
         return [...(ResourceClass.contextMenuItems || [])]
@@ -2049,6 +2064,21 @@ export default defineComponent({
     contextMenuHandlers.batchAddTag = () => handleBatchAddTag()
     contextMenuHandlers.batchDeleteTag = () => handleBatchDeleteTag()
     contextMenuHandlers.batchDelete = () => handleBatchDelete()
+    // 回收站：单条 / 批量「从库中移除记录」（磁盘文件一动不动）
+    contextMenuHandlers['remove-record'] = (item: any) => handleRemoveSingleRecord(item)
+    contextMenuHandlers.batchRemoveRecords = async () => {
+      const targets = items.value.filter((item: any) => selectedItems.value.has(item.id?.value || item.id))
+      if (targets.length === 0) {
+        notify.toast('warning', '批量移除记录', '请先选择要移除的记录')
+        return
+      }
+      if (!(await confirmRemoveRecords(targets.length))) return
+      const removed = await videoLib.removeRecords(targets)
+      selectedItems.value.clear()
+      isMultiSelectMode.value = false
+      refreshFilterData()
+      notify.toast('success', '已从库中移除', `${removed} 条记录（磁盘上的文件没有动）`)
+    }
     // 视频页：批量抽帧（逐个串行，最后只弹一条汇总）
     contextMenuHandlers.batchGrabCover = async () => {
       const targets = items.value.filter((item: any) => selectedItems.value.has(item.id?.value || item.id))
@@ -3131,7 +3161,8 @@ export default defineComponent({
       const folder = folderMenuFolder.value
       const count = folder?.count || 0
       return [
-        { key: 'relink-folder', icon: '🔗', label: `整个文件夹重新关联到…（${count} 个文件）` }
+        { key: 'relink-folder', icon: '🔗', label: `整个文件夹重新关联到…（${count} 个文件）` },
+        { key: 'remove-folder', icon: '🗑️', label: `从库中移除这组记录（${count} 个，磁盘文件不动）` }
       ]
     })
 
@@ -3150,7 +3181,50 @@ export default defineComponent({
       if (menuItem?.key === 'relink-folder') {
         await videoLib.relinkMissingFolder(folder)
         refreshFilterData()
+        return
       }
+      if (menuItem?.key === 'remove-folder') {
+        if (!(await confirmRemoveRecords(folder.count, folder.fullPath))) return
+        await videoLib.removeMissingFolder(folder)
+        refreshFilterData()
+      }
+    }
+
+    /**
+     * 移除记录前的确认（文案必须把"删的是记录、不是文件"说死）
+     */
+    const confirmRemoveRecords = async (count: number, detail?: string) => {
+      return await confirmService.confirm(
+        `从库中移除 ${count} 条丢失记录 —— 「磁盘上的文件不会动」。\n\n` +
+        '标签、打开次数、封面索引会一起消失，且不可撤销。\n' +
+        (detail ? `\n${detail}` : ''),
+        '从库中移除'
+      )
+    }
+
+    /** 清空回收站（当前范围内的全部丢失记录） */
+    const handleClearRecycleBin = async () => {
+      const count = videoLib.missingItems.value.length
+      if (count === 0) {
+        notify.toast('warning', '回收站是空的', '当前范围没有丢失的记录')
+        return
+      }
+      const scope = videoLib.currentRoot.value
+        ? `${videoLib.currentRoot.value}${videoLib.currentRel.value ? '\\' + videoLib.currentRel.value.replace(/\//g, '\\') : ''}`
+        : '全部绑定目录'
+      if (!(await confirmRemoveRecords(count, `范围：${scope}`))) return
+      const removed = await videoLib.clearMissingRecords()
+      videoLib.resetRecycle()
+      refreshFilterData()
+      notify.toast('success', '回收站已清空', `${removed} 条记录已从库中移除（磁盘文件没有动）`)
+    }
+
+    /** 单条丢失记录：从库中移除 */
+    const handleRemoveSingleRecord = async (item: any) => {
+      const name = String(BaseResources.extractPrimitiveValue(item?.name) || item?.fileName || '这条记录')
+      if (!(await confirmRemoveRecords(1, name))) return
+      await videoLib.removeRecords([item])
+      refreshFilterData()
     }
 
     const closeFolderMenu = () => {
@@ -3239,6 +3313,7 @@ export default defineComponent({
       recycleBreadcrumb,
       missingVideoCount,
       handleRecycleCrumb,
+      handleClearRecycleBin,
       folderCardTitle,
       folderMenuVisible,
       folderMenuPosition,
@@ -3946,6 +4021,16 @@ export default defineComponent({
 
   &:hover {
     background: var(--bg-primary);
+  }
+
+  /* 清空回收站这类"不可撤销"的操作给个红色提示 */
+  &.is-danger {
+    color: #ef4444;
+    border-color: rgba(239, 68, 68, 0.45);
+
+    &:hover {
+      background: rgba(239, 68, 68, 0.12);
+    }
   }
 }
 

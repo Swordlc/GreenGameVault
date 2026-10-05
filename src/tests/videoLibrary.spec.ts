@@ -563,8 +563,93 @@ describe('视频库 · 回收站（丢失的文件）', () => {
 })
 
 /* -------------------------------------------------------------------------- */
-/* 「整个文件夹重新关联到…」：批量接回 + 合并扫描重复记录                         */
+/* 回收站的「删除」：只删记录，不碰磁盘                                          */
 /* -------------------------------------------------------------------------- */
+
+describe('视频库 · 从库中移除记录（回收站清空）', () => {
+  function setup() {
+    const items = ref<any[]>([
+      makeItem('v1', ROOT_A, 'alive/还活着.mp4', { fileName: field('还活着.mp4') }),
+      makeItem('v2', ROOT_A, '合集A/gone1.mp4', { fileName: field('gone1.mp4'), fileExists: field(false), tags: field(['教学']) }),
+      makeItem('v3', ROOT_A, '合集A/子目录/gone2.mp4', { fileName: field('gone2.mp4'), fileExists: field(false) }),
+      makeItem('v4', ROOT_B, '别的根/gone3.mp4', { fileName: field('gone3.mp4'), fileExists: field(false) })
+    ])
+    const save = vi.fn(async () => true)
+    const lib = useVideoLibrary({
+      enabled: true,
+      items: items as any,
+      resourceClass: class FakeVideo {},
+      isElectronEnvironment: ref(false),
+      save
+    })
+    lib.roots.value = [ROOT_A, ROOT_B]
+    return { items, lib, save }
+  }
+
+  it('移除单条记录：从 items 里消失并落库，真实存在的记录不受影响', async () => {
+    const { items, lib, save } = setup()
+    const target = items.value.find((i: any) => i.id.value === 'v2')
+
+    const removed = await lib.removeRecords([target])
+
+    expect(removed).toBe(1)
+    expect(items.value.map((i: any) => i.id.value)).toEqual(['v1', 'v3', 'v4'])
+    expect(save).toHaveBeenCalled()
+  })
+
+  it('移除整组丢失记录：只动这棵子树，同范围的其它丢失记录留着', async () => {
+    const { items, lib } = setup()
+    const card = lib.recycleFolderCards.value.find((c: any) => c.rel === '合集A')!
+
+    const removed = await lib.removeMissingFolder(card)
+
+    expect(removed).toBe(2) // 合集A 自己 1 个 + 子目录 1 个
+    expect(items.value.map((i: any) => i.id.value)).toEqual(['v1', 'v4'])
+    expect(lib.missingItems.value.map((i: any) => i.id.value)).toEqual(['v4'])
+  })
+
+  it('清空回收站：只清当前范围内的丢失记录', async () => {
+    const { items, lib } = setup()
+
+    const removed = await lib.clearMissingRecords()
+
+    expect(removed).toBe(3)
+    expect(items.value.map((i: any) => i.id.value)).toEqual(['v1'])
+    expect(lib.missingItems.value).toEqual([])
+    // 真实存在的记录一条都不能少
+    expect(items.value.some((i: any) => i.id.value === 'v1')).toBe(true)
+  })
+
+  it('在子目录里清空：只清那个子树的丢失记录', async () => {
+    const { items, lib } = setup()
+    lib.currentRoot.value = ROOT_A
+    lib.currentRel.value = '合集A'
+
+    const removed = await lib.clearMissingRecords()
+
+    expect(removed).toBe(2)
+    expect(items.value.map((i: any) => i.id.value)).toEqual(['v1', 'v4'])
+  })
+
+  it('空输入 / 不存在的记录都不落库、不报错', async () => {
+    const { lib, save } = setup()
+    expect(await lib.removeRecords([])).toBe(0)
+    expect(await lib.removeRecords([null as any])).toBe(0)
+    expect(await lib.removeMissingFolder({ kind: 'root' } as any)).toBe(0)
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it('清完之后回收站层级退回去（不会卡在一个空目录里）', async () => {
+    const { lib } = setup()
+    lib.currentRoot.value = ROOT_A
+    lib.currentRel.value = '合集A'
+    lib.setRecycleRel('子目录')
+
+    await lib.clearMissingRecords()
+
+    expect(lib.recycleRel.value).toBe('')
+  })
+})
 
 describe('视频库 · 整夹重新关联', () => {
   it('挑一次新目录就把整夹接回来，并合并同路径的重复记录', async () => {

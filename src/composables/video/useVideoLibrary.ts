@@ -504,6 +504,54 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
     }
   }
 
+  /**
+   * 从库中**移除记录**（回收站的「删除」）。
+   *
+   * ⚠️ 只删库里的记录，**磁盘一个字节都不动** —— 与游戏页「批量删除文件」同一口径，
+   * 也守住了视频页「从不改动用户文件」的承诺。
+   * （丢失的文件在磁盘上本来大多已不存在；万一还在，记录删掉、文件留着，让主人自己处置。）
+   *
+   * 封面文件**故意不删**：记录 ID 由路径哈希得到，同一个文件重新扫回来还是同一个 ID、
+   * 同一个 `<id>.jpg` —— 留着可以让"误删记录后重新绑定"把封面也捡回来。
+   *
+   * @param targets 要移除的记录（调用方负责确认与筛选）
+   * @param opts.silent 批量/清空时由外层统一弹一条汇总
+   */
+  async function removeRecords(targets: any[], opts: { silent?: boolean } = {}): Promise<number> {
+    const list = (Array.isArray(targets) ? targets : []).filter(Boolean)
+    if (list.length === 0) return 0
+
+    const drop = new Set(list)
+    const before = (items.value || []).length
+    items.value = (items.value || []).filter((item: any) => !drop.has(item))
+    const removed = before - (items.value || []).length
+    if (removed === 0) return 0
+
+    await save()
+    refreshRecycleAfterRelink()
+
+    if (!opts.silent) {
+      notify.toast('success', '已从库中移除', `${removed} 条记录（磁盘上的文件没有动）`)
+    }
+    return removed
+  }
+
+  /** 移除回收站里某一个「原目录」子树的所有丢失记录 */
+  async function removeMissingFolder(card: FolderCard): Promise<number> {
+    if (!card || card.kind !== 'missing') return 0
+    const relInTree = card.rel || ''
+    const targets = missingItems.value.filter(item => {
+      const rel = relativeFolderOf(item)
+      return rel === relInTree || rel.startsWith(relInTree + '/')
+    })
+    return await removeRecords(targets)
+  }
+
+  /** 清空回收站（当前范围内的全部丢失记录） */
+  async function clearMissingRecords(): Promise<number> {
+    return await removeRecords([...missingItems.value])
+  }
+
   /** 是否有任何绑定目录 */
   const hasRoots = computed(() => roots.value.length > 0)
 
@@ -1363,6 +1411,10 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
     setRecycleRel,
     resetRecycle,
     relinkMissingFolder,
+    // 回收站的「删除」（只删记录，不碰磁盘）
+    removeRecords,
+    removeMissingFolder,
+    clearMissingRecords,
     // 范围判定（页面用它把「主视图」与文件系统绑死）
     isUnderCurrentLevel,
     isAtCurrentLevel,
