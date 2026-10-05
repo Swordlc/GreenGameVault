@@ -153,8 +153,15 @@ describe('主页「游戏 / 视频」胶囊切换', () => {
       relPath: `子目录/视频${String(i).padStart(2, '0')}.mkv`,
       author: ['某社团'],
       tags: i % 2 === 0 ? ['合集'] : ['散片'],
-      watchCount: size - i,
-      visitedSessions: [new Date(now - (i + 1) * DAY_MS_LOCAL).toISOString()],
+      // 🔴 2026-10-05 起：推荐只认 **ini 同步过来的 `potPlayerStats`**，
+      // `watchCount` / `visitedSessions` 不再参与（没有 ini = 从未观看 = 不进这两条链路）。
+      potPlayerStats: {
+        source: 'ini',
+        playCount: size - i,
+        totalSeconds: (size - i) * 60,
+        firstOpenMs: now - (size - i) * DAY_MS_LOCAL,
+        lastOpenMs: now - (i + 1) * DAY_MS_LOCAL
+      },
       addedDate: new Date(now - 400 * DAY_MS_LOCAL).toISOString()
     }))
   }

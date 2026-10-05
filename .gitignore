@@ -105,3 +105,6 @@ disguise/*.bmp
 .env.*
 !.env.example
 
+# PotStats（外部播放统计外挂）：源码入库，exe 由 tools/potstats/build.ps1 生成
+tools/potstats/bin/
+

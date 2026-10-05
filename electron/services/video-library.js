@@ -253,15 +253,6 @@ function registerIpcHandlers(ipcMain, shell, getWebContents) {
     }
   })
 
-  /** 批量取文件时间戳（atime 兜底统计） */
-  ipcMain.handle('video-stat', async (event, filePaths) => {
-    try {
-      return { ok: true, data: await videoUtils.statVideoFiles(filePaths) }
-    } catch (error) {
-      return { ok: false, message: error.message }
-    }
-  })
-
   /**
    * 「重新关联到…」：校验用户挑的新文件并算出该记录应有的字段
    * 入参：{ roots: string[], filePath: string }

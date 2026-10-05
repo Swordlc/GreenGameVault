@@ -5,7 +5,7 @@
   "description": "绑定文件夹后自动收录其中的视频（含子文件夹），只做标签与封面管理",
   "settingsKey": "video",
   "defaultPageSize": 30,
-  "defaultSortBy": "name-asc",
+  "defaultSortBy": "lastOpened-desc",
   "resourceTypes": [
     "Video"
   ],

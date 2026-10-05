@@ -2,7 +2,12 @@
 .main-content {
   flex: 1;
   margin-left: 280px;
-  padding-top: 40px; /* 为固定标签栏留出空间 */
+  /* 🔴 min-width: 0 不能删：flex 项默认 min-width:auto，内容的最小宽度（工具栏那一排按钮）
+     会把主区顶宽、撑出整页横向滚动条。2026-10-05 实测：窗口 1184px 时文档被撑到 1876px
+     （溢出 703px），而 .sidebar 是 position:fixed —— 一横滚内容就滑到侧栏底下，看着像"侧栏压住内容"。
+     原来这里还有 padding-top:40px 给"固定标签栏"让位，但标签栏 UI 早已不存在，
+     它只是一条永远空着的灰条，已删除。 */
+  min-width: 0;
   display: flex;
   flex-direction: column;
   min-height: 100vh;
@@ -16,22 +21,24 @@
 
 .content-header {
   background: var(--bg-secondary);
-  padding: 30px 40px;
+  /* 2026-10-05：30px 40px → 18px 24px。窗口高度常常只有 ~760px，
+     这个页头原本一口气吃掉 120px，压缩后把纵向空间还给内容。 */
+  padding: 18px 24px;
   border-bottom: 1px solid var(--border-color);
   box-shadow: 0 2px 4px var(--shadow-light);
   transition: background-color var(--transition-slow) ease, border-color var(--transition-slow) ease, box-shadow var(--transition-slow) ease;
 
   h2 {
     color: var(--text-primary);
-    font-size: 2rem;
+    font-size: 1.6rem;
     font-weight: 700;
-    margin-bottom: 8px;
+    margin-bottom: 4px;
     transition: color var(--transition-slow) ease;
   }
 
   p {
     color: var(--text-secondary);
-    font-size: 1.1rem;
+    font-size: 1rem;
     transition: color var(--transition-slow) ease;
   }
 }

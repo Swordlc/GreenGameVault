@@ -263,7 +263,10 @@ export default {
       sidebarWidth: 280,
       isSidebarResizing: false,
       sidebarResizeStartX: 0,
-      sidebarResizeStartWidth: 0
+      sidebarResizeStartWidth: 0,
+      // 窄屏自动折叠：记住主人手动拖出来的宽度，窗口变宽时还原回去
+      sidebarWidthPreferred: 280,
+      viewportNarrow: false
     }
   },
   computed: {
@@ -315,6 +318,26 @@ export default {
     },
   },
   methods: {
+    /**
+     * 窄屏自动折叠左侧导航栏（主人 2026-10-05 需求）
+     *
+     * 为什么需要：左侧栏固定 280px，窗口一窄就吃掉大半屏，右边内容挤到看不见。
+     * 折叠态**复用已有的** `.sidebar-narrow`（只显示图标的模式，样式表里早写好了），
+     * 这里只负责在窗口跨过阈值时切宽度；主人手动拖出来的宽度会被记住，窗口变宽自动还原。
+     */
+    handleViewportResize() {
+      const narrow = window.innerWidth < 1200
+      if (narrow === this.viewportNarrow) return
+      this.viewportNarrow = narrow
+      if (narrow) {
+        // 只有"宽态"下的宽度才值得记（折叠态自己是 72，别把它存成偏好）
+        if (this.sidebarWidth >= 200) this.sidebarWidthPreferred = this.sidebarWidth
+        // 88px 而不是 72：72 时"主页"那一行的展开箭头（▼）会把导航栏挤出横向滚动条
+        this.sidebarWidth = 88
+      } else {
+        this.sidebarWidth = this.sidebarWidthPreferred || 280
+      }
+    },
     startSidebarResize(e: MouseEvent) {
       this.isSidebarResizing = true
       this.sidebarResizeStartX = e.clientX
@@ -330,6 +353,8 @@ export default {
       let w = this.sidebarResizeStartWidth + delta
       w = Math.max(100, Math.min(480, w))
       this.sidebarWidth = w
+      // 记下主人偏好的宽度（窄屏自动折叠后要还原回这个值）
+      if (w >= 200) this.sidebarWidthPreferred = w
       this.sidebarResizeStartX = e.clientX
       this.sidebarResizeStartWidth = w
     },
@@ -1113,6 +1138,10 @@ export default {
     }
   },
   async mounted() {
+    // 窄屏自动折叠左侧栏：启动先判一次，之后跟着窗口尺寸走
+    this.handleViewportResize()
+    window.addEventListener('resize', this.handleViewportResize)
+
     // 监听应用整体缩放变化（菜单/快捷键），显示“缩放至 XX%”提示
     if (window.electronAPI && typeof window.electronAPI.onAppZoomChanged === 'function') {
       this.removeAppZoomChanged = window.electronAPI.onAppZoomChanged((data) => {
@@ -1369,6 +1398,9 @@ export default {
     console.log('✅ 应用初始化完成')
   },
   beforeUnmount() {
+    // 解除窄屏自动折叠的监听
+    window.removeEventListener('resize', this.handleViewportResize)
+
     // 停止定期检查游戏运行状态
     this.stopPeriodicStatusCheck()
     
@@ -1429,6 +1461,8 @@ export default {
   display: flex;
   flex: 1;
   overflow: hidden;
+  /* 同 .main-content：flex 项默认 min-width:auto，不肯缩到内容最小宽度以下 */
+  min-width: 0;
 }
 
 .content-body.with-filter {
@@ -1440,6 +1474,7 @@ export default {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-width: 0; /* 同上：不加会被工具栏顶宽，撑出整页横向滚动条 */
   position: relative;
 }
 
@@ -1516,6 +1551,15 @@ export default {
 .sidebar.sidebar-narrow .nav-item {
   padding: 12px 8px;
 }
+/* 图标右边距归零，否则折叠态下图标会被推偏、看着没居中 */
+.sidebar.sidebar-narrow .nav-icon {
+  margin-right: 0;
+}
+/* 折叠态藏掉"主页"的展开箭头：它自带 min-width 20px + padding，
+   会把 72px 的导航栏挤出横向滚动条（主人 2026-10-05 报的"目录栏会有滚动条"）。 */
+.sidebar.sidebar-narrow .nav-arrow {
+  display: none;
+}
 .sidebar.sidebar-narrow .nav-item-child {
   padding-left: 0;
   justify-content: center;
@@ -1529,7 +1573,10 @@ export default {
 .filter-sidebar-container {
   display: flex;
   flex-direction: column;
-  width: 250px;
+  /* 2026-10-05：250 → 200px。主人的窗口常见只有 ~1200×760，筛选栏占 250px 太奢侈，
+     而且它大半格子常年是空的（作者/格式筛选"暂无"）。 */
+  width: 200px;
+  flex: 0 0 200px;
   background: var(--bg-secondary);
   border-right: 1px solid var(--border-color);
   overflow-y: auto;

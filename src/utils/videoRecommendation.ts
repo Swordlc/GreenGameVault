@@ -67,9 +67,14 @@ const DAY_MS = 24 * 60 * 60 * 1000
  * 兼容 `author`（数组或字符串）与 `lastOpened` / `visitedSessions` 两种最后打开来源。
  */
 export function toHomeVideo(raw: any): HomeVideo {
-  const sessions = Array.isArray(raw?.visitedSessions) ? raw.visitedSessions : []
-  const lastSession = sessions.length > 0 ? sessions[sessions.length - 1] : null
   const authors = Array.isArray(raw?.author) ? raw.author : []
+
+  // 🔴 外部播放统计**只认 ini**：主进程 potstats-bridge 把 ini 的值写进 `potPlayerStats`。
+  // 没有 ini 的视频 → 这里就是 0 次 / 无最后打开 → **不会**进「最常观看 / 最近观看」两条链路
+  //（主人 2026-10-05 要求：以 ini 为唯一事实来源，没 ini 就当从未观看、不纳入主页推荐统计）。
+  const stats = raw?.potPlayerStats && typeof raw.potPlayerStats === 'object' ? raw.potPlayerStats : null
+  const iniLastOpenMs = stats ? Number(stats.lastOpenMs) || 0 : 0
+  const iniLastOpen = iniLastOpenMs > 0 ? new Date(iniLastOpenMs).toISOString() : null
 
   return {
     id: String(raw?.id ?? ''),
@@ -81,8 +86,8 @@ export function toHomeVideo(raw: any): HomeVideo {
     tags: Array.isArray(raw?.tags)
       ? raw.tags.filter((tag: unknown): tag is string => typeof tag === 'string' && tag !== '')
       : [],
-    watchCount: Number(raw?.watchCount) || 0,
-    lastOpened: firstNonEmptyString(raw?.lastOpened, lastSession),
+    watchCount: stats ? Number(stats.playCount) || 0 : 0,
+    lastOpened: iniLastOpen,
     addedDate: firstNonEmptyString(raw?.addedDate),
     durationSec: Number(raw?.durationSec) || 0,
     relPath: firstNonEmptyString(raw?.relPath) ?? '',

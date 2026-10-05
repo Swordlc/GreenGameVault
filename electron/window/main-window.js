@@ -29,7 +29,7 @@
  * ============================================================================
  */
 
-const { BrowserWindow, app } = require('electron')
+const { BrowserWindow, app, screen } = require('electron')
 const path = require('path')
 
 // 主窗口实例
@@ -108,10 +108,25 @@ function createMainWindow(isDev, getMinimizeToTrayEnabled, getSystemTray, displa
     }
   }
   
+  // 主窗口默认尺寸（主人 2026-10-05 指定 1600x900；原来 1200x800 太挤 ——
+  // 视频页"导航栏 + 筛选栏 + 内容"三栏在 1200 宽下很难受）。
+  // 加一道保险：不超过主显示器工作区，免得在小屏笔记本上窗口跑到屏幕外。
+  const DEFAULT_WIN_WIDTH = 1600
+  const DEFAULT_WIN_HEIGHT = 900
+  let winWidth = DEFAULT_WIN_WIDTH
+  let winHeight = DEFAULT_WIN_HEIGHT
+  try {
+    const workArea = screen.getPrimaryDisplay().workAreaSize
+    if (workArea && workArea.width > 0) winWidth = Math.min(winWidth, workArea.width)
+    if (workArea && workArea.height > 0) winHeight = Math.min(winHeight, workArea.height)
+  } catch (_) {
+    /* 拿不到屏幕信息就用默认值 */
+  }
+
   // 创建浏览器窗口
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: winWidth,
+    height: winHeight,
     minWidth: 800,
     minHeight: 600,
     webPreferences: {

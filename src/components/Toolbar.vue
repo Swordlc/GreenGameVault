@@ -301,6 +301,9 @@ export default {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  /* 窗口窄时让左右两组换行，而不是把整页顶出横向滚动条（2026-10-05 修） */
+  flex-wrap: wrap;
+  gap: 10px 15px;
   margin-bottom: 20px;
   padding: 15px;
   border-bottom: 1px solid var(--border-color);
@@ -309,6 +312,8 @@ export default {
 .toolbar-left {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
   gap: 15px;
 }
 
@@ -345,6 +350,8 @@ export default {
 .toolbar-right {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
   gap: 15px;
 }
 

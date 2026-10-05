@@ -8,7 +8,10 @@
  *        文件还在 → 只更新大小/时间，**绝不碰用户打的标签**
  *   3. 层级浏览：当前根目录 + 当前相对子目录 → 面包屑、子文件夹卡片、当前层视频
  *   4. 实时更新：fs.watch（主进程）变化事件 → debounce 后自动重新扫描
- *   5. 打开次数：App 内点开立即 +1；外部播放器打开靠 atime 轮询兜底（带去重）
+ *   5. 打开次数：**只认 App 内点开（+1）**。用外部播放器（PotPlayer）观看由主进程的
+ *        PotStats 挂载**实时**记录：只更新时间戳（不动 App 的打开次数），PotPlayer 自己的
+ *        播放次数 / 累计播放时长写进独立的 `potPlayerStats` 字段；
+ *        见 electron/services/potstats-bridge.js。渲染层只负责把结果就地刷进列表。
  *   6. 抽帧封面：ffmpeg 优先，失败回退 <video>+<canvas>；固定文件名**覆盖式**写入，永不膨胀
  *
  * 设计取舍：
@@ -39,15 +42,6 @@ export const DEFAULT_VIDEO_EXTENSIONS = [
   '.mpg', '.mpeg', '.ts', '.m2ts', '.mts', '.rmvb', '.rm', '.3gp',
   '.vob', '.ogv', '.ogm', '.asf', '.f4v', '.divx', '.m2v', '.dat'
 ]
-
-/** atime 兜底轮询间隔（毫秒）——NTFS 的 atime 是懒写，所以不必查得太勤 */
-const ATIME_POLL_INTERVAL = 60 * 1000
-
-/** atime 与「我们已知的访问时间」相差超过这个阈值才算一次新的外部打开 */
-const ATIME_NEW_OPEN_THRESHOLD = 2000
-
-/** 每轮 atime 轮询最多查多少个文件，避免大目录把主进程问爆 */
-const ATIME_POLL_BATCH_LIMIT = 800
 
 /** 抽帧封面的目标宽度（控制封面体积） */
 const COVER_MAX_WIDTH = 640
@@ -130,7 +124,6 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
   const currentRel = ref<string>('')
 
   let removeLibraryChangedListener: null | (() => void) = null
-  let atimeTimer: ReturnType<typeof setInterval> | null = null
   let initialized = false
 
   /* ------------------------------ 计算属性 ------------------------------ */
@@ -844,6 +837,11 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
             watcherHealthy.value = false
             return
           }
+          // PotStats 挂载的结果：主进程已经写好库了，这里只把内存里的记录跟上，**不要**再扫描/落库
+          if (payload?.type === 'potstats') {
+            applyPlaybackUpdates(payload.updated || [])
+            return
+          }
           await scanAndSync({ silent: true })
         })
       }
@@ -964,18 +962,16 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
   /* ------------------------------ 打开与计数 ------------------------------ */
 
   /**
-   * 递增打开次数。
-   * App 内点开时调用；同时把 lastAccessSeenMs 顶到「现在」，
-   * 这样 atime 轮询不会把同一次打开再算一遍。
+   * 递增「App 内打开次数」。
+   *
+   * ⚠️ 2026-10-05 起**不再往 `visitedSessions` / `lastAccessSeenMs` 里写时间**。
+   * 「最后打开 / 首次打开 / 播放次数 / 累计时长」一律以**视频同目录的 .ini** 为唯一事实来源
+   * （主进程 potstats-bridge 负责把 ini 读进 `potPlayerStats`）。App 内点开如果也写时间，
+   * 就会出现主人验收时报的那个矛盾现象：**没有 ini 却显示"5 分钟前"**。
    */
-  async function bumpOpenCount(item: any, at: number = Date.now()): Promise<void> {
+  async function bumpOpenCount(item: any, _at: number = Date.now()): Promise<void> {
     const count = Number(fieldValue(item.watchCount) || 0) + 1
     setField(item, 'watchCount', count)
-
-    const sessions = Array.isArray(fieldValue(item.visitedSessions)) ? [...fieldValue(item.visitedSessions)] : []
-    sessions.push(new Date(at).toISOString())
-    setField(item, 'visitedSessions', sessions)
-    setField(item, 'lastAccessSeenMs', Math.max(Number(fieldValue(item.lastAccessSeenMs) || 0), at))
   }
 
   /** 用系统默认播放器打开，并记一次打开 */
@@ -1002,62 +998,32 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
   }
 
   /**
-   * atime 兜底轮询：外部播放器（PotPlayer 等）看过之后，文件的访问时间会变化。
-   * 只查**当前层**的文件，且只有 atime 明显新于已知值才算一次新打开。
+   * 把**主进程 PotStats 挂载**算出来的结果就地刷进当前列表。
+   *
+   * ⚠️ 只动「时间」两件套（`lastAccessSeenMs` / `visitedSessions`）与 PotPlayer 自己的
+   * `potPlayerStats`，**绝不碰 `watchCount`** —— 那是「App 内点开次数」，
+   * 与「用 PotPlayer 播了几次」是两个指标（主人 2026-10-05 的决定）。
+   *
+   * 为什么不是「重新拉一次库」：主进程已经写过库了，这里只需要让内存里的记录跟上，
+   * 免得主人接着编辑标签时又把旧值整体写回去（把刚记上的时间抹掉）。
+   * 只认 id 命中的记录；不在列表里的（解绑目录、当前页没加载的）直接忽略。
    */
-  async function pollAtimeOnce(): Promise<void> {
-    const client = api()
-    if (!isElectronEnvironment.value || !client?.videoStat) return
+  function applyPlaybackUpdates(updates: any[]): number {
+    if (!Array.isArray(updates) || updates.length === 0) return 0
 
-    const candidates = scopedItems.value
-      .filter(item => fieldValue(item.fileExists) !== false)
-      .slice(0, ATIME_POLL_BATCH_LIMIT)
-    if (candidates.length === 0) return
+    const byId = new Map<string, any>()
+    for (const item of items.value) byId.set(String(fieldValue(item.id) || ''), item)
 
-    const paths = candidates.map(item => String(fieldValue(item.resourcePath) || ''))
-    const response = await client.videoStat(paths)
-    if (!response?.ok) return
-
-    const byPath = new Map<string, any>()
-    for (const entry of response.data || []) byPath.set(pathKey(entry.path), entry)
-
-    let changed = 0
-    for (const item of candidates) {
-      const filePath = String(fieldValue(item.resourcePath) || '')
-      const stat = byPath.get(pathKey(filePath))
-      if (!stat) continue
-
-      if (!stat.exists) {
-        if (fieldValue(item.fileExists) !== false) {
-          setField(item, 'fileExists', false)
-          changed++
-        }
-        continue
-      }
-
-      const seen = Number(fieldValue(item.lastAccessSeenMs) || 0)
-      const atime = Number(stat.atimeMs || 0)
-      if (atime > seen + ATIME_NEW_OPEN_THRESHOLD) {
-        await bumpOpenCount(item, atime)
-        changed++
-      }
+    let applied = 0
+    for (const update of updates) {
+      const item = byId.get(String(update?.id || ''))
+      if (!item) continue
+      setField(item, 'lastAccessSeenMs', Number(update.lastAccessSeenMs) || 0)
+      setField(item, 'visitedSessions', Array.isArray(update.visitedSessions) ? [...update.visitedSessions] : [])
+      if (update.potPlayerStats) setField(item, 'potPlayerStats', { ...update.potPlayerStats })
+      applied++
     }
-
-    if (changed > 0) await save()
-  }
-
-  function startAtimePolling(): void {
-    if (!enabled || atimeTimer) return
-    atimeTimer = setInterval(() => {
-      pollAtimeOnce().catch(error => console.warn('[视频库] atime 轮询失败:', error))
-    }, ATIME_POLL_INTERVAL)
-  }
-
-  function stopAtimePolling(): void {
-    if (atimeTimer) {
-      clearInterval(atimeTimer)
-      atimeTimer = null
-    }
+    return applied
   }
 
   /* ------------------------------ 抽帧封面 ------------------------------ */
@@ -1151,7 +1117,7 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
           setField(item, 'coverPath', saveResult.coverPath)
           setField(item, 'lastFrameTime', Number(video.currentTime) || 0)
           setField(item, 'coverUpdatedAt', Date.now())
-          // 同 ffmpeg 路径：解码读过文件，atime 会变，别让它被算成一次「观看」
+          // 同 ffmpeg 路径：解码读过文件，顺手把「刚被动过」的基线顶到现在
           setField(item, 'lastAccessSeenMs', Date.now())
           if (!options.skipSave) await save()
           if (!options.silent) {
@@ -1207,8 +1173,8 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
       // 否则渲染层的图片缓存会一直显示上一张（重刷看起来没反应）
       setField(item, 'coverUpdatedAt', Date.now())
       // ⚠️ 抽帧会真的去**读**视频文件（ffmpeg 读一遍 / canvas 解码一遍），
-      // 这会更新文件的 atime；若不把「已知访问时间」顶到现在，
-      // 下一轮 atime 轮询就会把「抽了张封面」误记成「观看了一次」。
+      // 所以顺手把「这个文件刚被动过」的基线顶到现在 ——
+      // 语义是"我们动过它"，不是"主人看过它"。
       setField(item, 'lastAccessSeenMs', Date.now())
       if (!options.skipSave) await save()
       if (!options.silent) {
@@ -1328,7 +1294,7 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
     setField(item, 'fileName', check.fileName || '')
     setField(item, 'fileSize', Number(check.size) || 0)
     setField(item, 'fileExists', true)
-    // 别让 atime 轮询把这次操作算成一次「观看」
+    // 这是我们动过文件，不是主人看过它
     setField(item, 'lastAccessSeenMs', Date.now())
 
     // 显示名若本来就是「文件名去掉扩展名」（即用户没自己改过），跟着新文件名一起更新
@@ -1357,7 +1323,8 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
   }
 
   /**
-   * 进入视频页时调用：读设置 → 后台扫描 → 起监听 → 起 atime 轮询
+   * 进入视频页时调用：读设置 → 后台扫描 → 起目录监听
+   * （外部播放统计由主进程的 PotStats 挂载常驻，页面只管收结果）
    * @param {{silent?: boolean}} [opts]
    */
   async function initialize(opts: { silent?: boolean } = {}): Promise<void> {
@@ -1369,18 +1336,29 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
     await loadFfmpegInfo()
     await scanAndSync({ silent: opts.silent ?? true })
     await startWatch()
-    startAtimePolling()
   }
 
-  /** 手动刷新（实时监听不可用时的兜底） */
+  /**
+   * 手动刷新（「重新扫描」按钮）：
+   *   1. 先让主进程做一次 **ini 全库对账** —— GGV 关着的时候用 PotPlayer 看过的那些，
+   *      ini 已经写好了但库里还没同步；ini 是外部播放统计的唯一事实来源；
+   *   2. 再扫文件系统的增删。
+   */
   async function rescan(): Promise<void> {
+    const client = api()
+    if (isElectronEnvironment.value && client?.potStatsSync) {
+      try {
+        await client.potStatsSync({ reason: 'manual' })
+      } catch (error) {
+        console.warn('[视频库] ini 对账失败:', error)
+      }
+    }
     await scanAndSync({ silent: false })
     lastScanAt.value = new Date().toISOString()
   }
 
   /** 离开页面时释放资源 */
   async function dispose(): Promise<void> {
-    stopAtimePolling()
     await stopWatch()
   }
 
@@ -1424,7 +1402,7 @@ export function useVideoLibrary(options: UseVideoLibraryOptions) {
     initialize,
     rescan,
     dispose,
-    pollAtimeOnce,
+    applyPlaybackUpdates,
     // 绑定目录
     bindFolder,
     unbindFolder,

@@ -7,8 +7,11 @@
   flex-direction: column;
   box-shadow: 2px 0 10px var(--shadow-light);
   position: fixed;
-  top: 40px; /* 标签栏高度，避免被标签栏遮挡 */
-  height: calc(100vh - 40px); /* 减去标签栏高度 */
+  /* 2026-10-05：原来是 top:40px / height:calc(100vh - 40px)，给"固定标签栏"让位；
+     但标签栏 UI 早已不存在（模板里没有那个元素，hasTabs 只用来加一个 class），
+     这 40px 变成一条永远空着的灰条 —— 改成占满整高。 */
+  top: 0;
+  height: 100vh;
   overflow-y: auto;
   transition: box-shadow var(--transition-slow) ease;
 }

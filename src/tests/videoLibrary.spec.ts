@@ -193,19 +193,24 @@ describe('视频库 · 层级浏览', () => {
 })
 
 describe('视频库 · 打开次数', () => {
-  it('bumpOpenCount 同时维护次数与时间线，并把 atime 基线顶到现在', async () => {
+  it('bumpOpenCount 只维护「App 内打开次数」，**不再写时间**（时间以 ini 为唯一来源）', async () => {
     const { lib } = setup()
     const item = lib.scopedItems.value[0]
+
+    const sessionsBefore = JSON.stringify(item.visitedSessions.value)
+    const baselineBefore = item.lastAccessSeenMs.value
 
     await lib.bumpOpenCount(item, Date.parse('2026-01-02T03:04:05.000Z'))
 
     expect(item.watchCount.value).toBe(1)
-    expect(item.visitedSessions.value).toEqual(['2026-01-02T03:04:05.000Z'])
-    expect(item.lastAccessSeenMs.value).toBeGreaterThanOrEqual(Date.parse('2026-01-02T03:04:05.000Z'))
+    // 🔴 时间线一个字节都不许动：显示层只认 ini 同步过来的 potPlayerStats。
+    // 之前 App 内点开也写时间，导致"没有 ini 却显示 5 分钟前"（主人 2026-10-05 验收时报的）。
+    expect(JSON.stringify(item.visitedSessions.value)).toBe(sessionsBefore)
+    expect(item.lastAccessSeenMs.value).toBe(baselineBefore)
 
-    await lib.bumpOpenCount(item, Date.parse('2026-01-03T00:00:00.000Z'))
+    await lib.bumpOpenCount(item)
     expect(item.watchCount.value).toBe(2)
-    expect(item.visitedSessions.value).toHaveLength(2)
+    expect(JSON.stringify(item.visitedSessions.value)).toBe(sessionsBefore)
   })
 })
 

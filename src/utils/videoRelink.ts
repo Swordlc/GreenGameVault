@@ -167,6 +167,6 @@ export function applyRelinkResult(item: any, resolved: any): void {
   if (resolved.fileName !== undefined) setField(item, 'fileName', resolved.fileName || '')
   if (resolved.size !== undefined) setField(item, 'fileSize', Number(resolved.size) || 0)
   setField(item, 'fileExists', true)
-  // 别让 atime 轮询把这次「重新关联」算成一次观看
+  // 重新关联是我们"刚刚动过这个文件"，把基线顶到现在
   setField(item, 'lastAccessSeenMs', Date.now())
 }

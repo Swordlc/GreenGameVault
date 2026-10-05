@@ -163,7 +163,7 @@ describe('mergeVideoRecords（把扫描空壳并进老记录）', () => {
 })
 
 describe('applyRelinkResult', () => {
-  it('写入新路径相关字段，并把 atime 基线顶到现在（免得被算成一次观看）', () => {
+  it('写入新路径相关字段，并把 lastAccessSeenMs 基线顶到现在', () => {
     const before = Date.now()
     const item: any = {
       resourcePath: field('D:\\V\\合集A\\01.mkv'),

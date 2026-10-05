@@ -13,7 +13,10 @@ import { ResourceField } from './base/ResourceField.ts'
  * 与 Game 的根本区别（「只读的标签管理」）：
  *   - 资源**不是**手动添加的，而是由「绑定文件夹」递归扫描得到；
  *     所以这里没有「添加/删除/编辑路径」的语义，resourcePath 等字段不允许在编辑对话框里改。
- *   - 不计时：只统计**打开次数**（watchCount）与最后打开时间（从 visitedSessions 派生）。
+ *   - 不计时：App 内只统计**打开次数**（watchCount）与最后打开时间（从 visitedSessions 派生）。
+ *     用 **PotPlayer** 播放的实测统计（播放次数 / 累计播放时长 / 打开时间）另记在
+ *     `potPlayerStats` 字段里，由主进程的 PotStats 挂载写入
+ *     （electron/services/potstats-bridge.js，走 PotPlayer 官方 IPC），**绝不动 watchCount**。
  *   - 封面只有一个来源：随机抽 1 帧（覆盖式写入，固定文件名，永不膨胀）。
  *
  * 字段命名口径：游戏页叫「开发商」，视频页一律叫「作者」（author）。
@@ -101,13 +104,46 @@ export class Video extends BaseResources {
 	})
 
 	/**
-	 * 上一次观测到的文件访问时间（毫秒）。
-	 * 用于「外部播放器打开 → atime 变化」的兜底统计去重：只有 atime 明显新于这个值才 +1。
+	 * 最后一次**确认**打开这个视频的时刻（毫秒）。
+	 *
+	 * ⚠️ 它不直接显示；显示用的时间来自 `visitedSessions`（主进程命中时会往里追加一条）。
+	 * 写入方是主进程的 PotStats 挂载（electron/services/potstats-bridge.js）——
+	 * 取的是 PotPlayer 官方 IPC 报的**真实打开时刻**，不再是「文件 atime 被谁读过」的猜测。
 	 */
 	lastAccessSeenMs: ResourceField<number> = new ResourceField<number>({
 		saveable: true,
 		defaultValue: 0
 	})
+
+	/**
+	 * 用 **PotPlayer** 播放这个视频的实测统计（由主进程 PotStats 挂载写入）。
+	 *
+	 * 🔴 与 `watchCount` 是**两个不同指标**，别混：
+	 *   - `watchCount`        = **App 内点开次数**（`useVideoLibrary.bumpOpenCount`）；
+	 *   - `potPlayerStats.playCount` = **用 PotPlayer 播放且满 10 秒的次数**。
+	 *
+	 * 数据来源是 PotPlayer 官方 IPC（`InternalSimpleCmd.h`）：`PLAY_STATUS == 2` 才算在看，
+	 * 所以 `totalSeconds` 是**暂停一秒都不算**的真实播放时长。
+	 * 外部播放**只写本字段与时间戳两件套，绝不碰 `watchCount`**。
+	 *
+	 * 形状：`{ playCount, totalSeconds, firstOpenMs, lastOpenMs, lastPositionMs, durationMs, updatedAt }`
+	 */
+	potPlayerStats: ResourceField<any> = new ResourceField<any>({
+		saveable: true,
+		defaultValue: null
+	})
+
+	/** PotPlayer 播放次数（0 = 还没统计到） */
+	get potPlayerPlayCount(): number {
+		const stats = this.potPlayerStats.value
+		return stats && typeof stats === 'object' ? (Number(stats.playCount) || 0) : 0
+	}
+
+	/** PotPlayer 累计播放时长（秒，暂停不计） */
+	get potPlayerTotalSeconds(): number {
+		const stats = this.potPlayerStats.value
+		return stats && typeof stats === 'object' ? (Number(stats.totalSeconds) || 0) : 0
+	}
 
 	/** 封面（相对 SaveData 的路径，如 videos/covers/<id>.jpg） */
 	coverPath: ResourceField<string> = new ResourceField<string>({
@@ -137,16 +173,27 @@ export class Video extends BaseResources {
 		defaultValue: 0
 	})
 
-	/** 最后一次打开时间（从 visitedSessions 派生，与 Game.lastPlayed 同款） */
+	/**
+	 * 最后一次打开时间 —— **只认 ini 同步过来的 `potPlayerStats`**。
+	 *
+	 * 🔴 2026-10-05 主人要求「全局计算口径直接读 ini，以 ini 为唯一事实来源」：
+	 * 没有 ini 的视频一律显示「从未观看」。所以这里**不再看 `visitedSessions`** ——
+	 * 那个字段里还留着早期 atime 巡检写进去的时间戳，会让"没有 ini 却显示 5 分钟前"
+	 * 这种自相矛盾的东西冒出来（主人验收时就是这么发现的）。
+	 */
 	get lastOpened(): string | null {
-		const arr = this.visitedSessions.value
-		return Array.isArray(arr) && arr.length > 0 ? arr[arr.length - 1] : null
+		const stats = this.potPlayerStats.value
+		const ms = stats && typeof stats === 'object' ? Number(stats.lastOpenMs) || 0 : 0
+		return ms > 0 ? new Date(ms).toISOString() : null
 	}
 
-	/** 首次打开时间 */
+	/** 首次打开时间（同样只认 ini） */
 	get firstOpened(): string | null {
-		const arr = this.visitedSessions.value
-		return Array.isArray(arr) && arr.length > 0 ? arr[0] : null
+		const stats = this.potPlayerStats.value
+		const ms = stats && typeof stats === 'object'
+			? (Number(stats.firstOpenMs) || Number(stats.lastOpenMs) || 0)
+			: 0
+		return ms > 0 ? new Date(ms).toISOString() : null
 	}
 
 	/** 所在子目录（相对根目录），根下文件返回 ''；层级浏览用 */
@@ -174,6 +221,7 @@ export class Video extends BaseResources {
 			watchCount: this.watchCount.value || 0,
 			visitedSessions: Array.isArray(this.visitedSessions.value) ? [...this.visitedSessions.value] : [],
 			lastAccessSeenMs: this.lastAccessSeenMs.value || 0,
+			potPlayerStats: this.potPlayerStats.value || null,
 			coverPath: this.coverPath.value || '',
 			lastFrameTime: this.lastFrameTime.value || 0,
 			coverUpdatedAt: this.coverUpdatedAt.value || 0,
@@ -235,7 +283,9 @@ export class Video extends BaseResources {
 		stats: [
 			{
 				type: 'text' as const,
-				field: 'watchCount',
+				// 🔴 只认 ini 同步过来的 potPlayerStats（没有 ini = 没看过 = 未观看），
+				// 不能用 watchCount：那是"App 内点开次数"，会出现"有次数、没时间"的矛盾组合。
+				field: 'potPlayerPlayCount',
 				label: '观看:',
 				formatter: 'formatWatchCount'
 			},
@@ -280,10 +330,10 @@ export class Video extends BaseResources {
 		// 数据记录区（去掉了游戏时长，只留打开次数与时间）
 		dataRecords: [
 			{
-				field: 'watchCount',
-				label: '打开次数',
-				formatter: undefined,
-				defaultValue: '0 次'
+				field: 'potPlayerPlayCount',
+				label: 'PotPlayer 播放次数',
+				formatter: 'formatWatchCount',
+				defaultValue: '从未观看'
 			},
 			{
 				field: 'lastOpened',

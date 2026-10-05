@@ -1469,13 +1469,21 @@ export default defineComponent({
     // 筛选池是子树（为了让左栏筛选有数据），所以这里必须再收窄一次。
     // 判定逻辑抽在 utils/videoVisibility.ts 里，方便单测。
     const rawFilteredItems = filterComposable.filteredGames
-    const filteredItems = computed<any[]>(() => filterVisibleVideoItems(rawFilteredItems.value || [], {
-      recycleMode: isRecycleBinMode.value,
-      recycleRel: videoLib.recycleRel.value,
-      isMissing: isMissingItem,
-      isAtCurrentLevel: videoLib.isAtCurrentLevel,
-      relativeFolderOf: videoLib.relativeFolderOf
-    }))
+    const filteredItems = computed<any[]>(() => {
+      // 🔴 这道「显示闸门」是**视频页专属**的：它按 rootPath / relPath 判断"是否在当前这一层"，
+      // 而游戏等其它资源页根本没有层级概念 —— 一旦也被它过滤就会全军覆没。
+      // （v1.3.0 唯独漏了这一处守卫，导致游戏页恒显示「没有找到匹配的游戏」；
+      //   2026-10-05 用 CDP 实测定位：IPC 返回 270 条游戏，DOM 里 0 张卡片。）
+      if (!isVideoPage.value) return rawFilteredItems.value || []
+
+      return filterVisibleVideoItems(rawFilteredItems.value || [], {
+        recycleMode: isRecycleBinMode.value,
+        recycleRel: videoLib.recycleRel.value,
+        isMissing: isMissingItem,
+        isAtCurrentLevel: videoLib.isAtCurrentLevel,
+        relativeFolderOf: videoLib.relativeFolderOf
+      })
+    })
     // 下游（分页、空状态判定、模板）统一用这份收窄后的列表
     ;(filterComposable as any).filteredGames = filteredItems
     ;(filterComposable as any).filteredItems = filteredItems
@@ -2441,7 +2449,7 @@ export default defineComponent({
     
     // 组件卸载前清理事件监听器
     onBeforeUnmount(() => {
-      // 视频页：停掉 atime 轮询与目录监听
+      // 视频页：停掉目录监听（外部播放统计由主进程的 PotStats 挂载常驻，不随页面走）
       if (isVideoPage.value) {
         videoLib.dispose().catch((error: any) => {
           console.warn('[GenericResourceView] 视频库资源释放失败:', error)

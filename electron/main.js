@@ -19,6 +19,7 @@ const gameProcess = require('./services/game-process')
 const screenshot = require('./services/screenshot')
 const shortcuts = require('./services/shortcuts')
 const videoLibrary = require('./services/video-library')
+const potStatsBridge = require('./services/potstats-bridge')
 // 引入 IPC 处理器模块
 const dialogHandlers = require('./ipc/dialog-handlers')
 const fileHandlers = require('./ipc/file-handlers')
@@ -216,6 +217,18 @@ if (!gotTheLock) {
     videoLibrary.registerIpcHandlers(ipcMain, shell, () => {
       const win = mainWindowModule.getMainWindow()
       return win && !win.isDestroyed() ? win.webContents : null
+    })
+
+    // 外部播放（PotPlayer）统计：把 PotStats.exe 挂到应用生命周期上。
+    // 它走 PotPlayer 官方 IPC 拿**实测**的播放状态（0 停 / 1 暂停 / 2 在播）与播放位置，
+    // 实时写回「播放次数 / 累计播放时长 / 打开时间」。无托盘、无窗口，主人看不到多余图标。
+    potStatsBridge.registerIpcHandlers(ipcMain)
+    potStatsBridge.start({
+      app,
+      notify: payload => {
+        const win = mainWindowModule.getMainWindow()
+        if (win && !win.isDestroyed()) win.webContents.send('video-library-changed', payload)
+      }
     })
     
     // SQLite demo 数据查询（供「数据库」页面展示）
@@ -467,6 +480,9 @@ app.on('web-contents-created', (event, contents) => {
 // 应用退出时注销快捷键和销毁托盘
 app.on('will-quit', () => {
   shortcuts.unregisterAllShortcuts()
+  // 收掉外部播放统计的子进程：先关它的 stdin，它会先把最后一段落盘再自己退出。
+  // 子进程是独立进程、父进程没了也会自己收工，所以这里不阻塞退出流程。
+  void potStatsBridge.stop()
   // 销毁系统托盘
   systemTray.destroyTray()
 })

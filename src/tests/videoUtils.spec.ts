@@ -273,17 +273,6 @@ describe('resolveRelinkTarget', () => {
   })
 })
 
-describe('statVideoFiles', () => {  it('分别回报存在与不存在', async () => {
-    const existing = path.join(libraryRoot, 'a.mp4')
-    const missing = path.join(libraryRoot, 'nope.mp4')
-    const result = await videoUtils.statVideoFiles([existing, missing])
-
-    expect(result[0].exists).toBe(true)
-    expect(typeof result[0].atimeMs).toBe('number')
-    expect(result[1].exists).toBe(false)
-  })
-})
-
 /* -------------------------------------------------------------------------- */
 /* 整夹重连：resolveRelinkFolderBatch                                          */
 /* -------------------------------------------------------------------------- */

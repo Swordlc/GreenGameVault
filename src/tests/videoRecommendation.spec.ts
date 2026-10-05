@@ -61,15 +61,24 @@ function makeLibrary(size = 60): HomeVideo[] {
 }
 
 describe('toHomeVideo', () => {
-  it('从 SQLite 原始 JSON 归一化：author 数组取首个、lastOpened 由 visitedSessions 末位派生', () => {
+  it('归一化：author 取首个；次数/最后打开**只认 ini 同步的 potPlayerStats**，不采信 raw.watchCount', () => {
     const video = toHomeVideo({
       id: 'v1',
       name: '第二部',
       author: ['某社团', '另一个人'],
       coverPath: 'videos/covers/v1.jpg',
       tags: ['教学', '', null],
+      // 这两个是"旧口径"的字段：现在**不该**再被采纳
       watchCount: 3,
       visitedSessions: ['2026-01-01T00:00:00.000Z', '2026-02-02T00:00:00.000Z'],
+      // ini 同步过来的才是事实来源
+      potPlayerStats: {
+        source: 'ini',
+        playCount: 5,
+        totalSeconds: 600,
+        firstOpenMs: Date.parse('2026-01-01T00:00:00.000Z'),
+        lastOpenMs: Date.parse('2026-02-02T00:00:00.000Z')
+      },
       addedDate: '2025-12-01T00:00:00.000Z',
       durationSec: 5400,
       relPath: '子目录A/第二部.mkv'
@@ -78,9 +87,21 @@ describe('toHomeVideo', () => {
     expect(video.author).toBe('某社团')
     expect(video.lastOpened).toBe('2026-02-02T00:00:00.000Z')
     expect(video.tags).toEqual(['教学'])
-    expect(video.watchCount).toBe(3)
+    expect(video.watchCount).toBe(5)
     expect(video.durationSec).toBe(5400)
     expect(video.relPath).toBe('子目录A/第二部.mkv')
+  })
+
+  it('🔴 没有 potPlayerStats（= 没有 ini）→ 0 次 / 无最后打开：不进「最常观看 / 最近观看」', () => {
+    const video = toHomeVideo({
+      id: 'v9',
+      name: '没看过',
+      watchCount: 9,
+      visitedSessions: ['2026-05-05T00:00:00.000Z']
+    })
+
+    expect(video.watchCount).toBe(0)
+    expect(video.lastOpened).toBeNull()
   })
 
   it('缺名字时退回文件名；缺字段不会炸', () => {

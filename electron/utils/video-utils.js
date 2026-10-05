@@ -11,7 +11,6 @@
  *   2. findFfmpeg          —— 定位可用的 ffmpeg（随包 → 环境变量 → PATH → 常见安装路径）
  *   3. grabRandomFrame     —— 随机抽 1 帧写成 jpg（覆盖式，固定文件名，永不膨胀）
  *   4. 覆盖式封面读写/删除  —— SaveData/videos/covers/<videoId>.jpg
- *   5. statVideoFiles      —— 批量取文件时间戳（用于 atime 兜底统计打开次数）
  */
 
 const fs = require('fs')
@@ -590,29 +589,6 @@ async function deleteVideoCover(saveDataDir, videoId) {
 }
 
 /**
- * 批量取文件时间戳（atime 兜底统计用）
- * @param {string[]} filePaths
- * @returns {Promise<Array<{path: string, exists: boolean, size?: number, mtimeMs?: number, atimeMs?: number}>>}
- */
-async function statVideoFiles(filePaths) {
-  const list = Array.isArray(filePaths) ? filePaths : []
-  return Promise.all(list.map(async filePath => {
-    try {
-      const stat = await fsp.stat(filePath)
-      return {
-        path: filePath,
-        exists: stat.isFile(),
-        size: stat.size,
-        mtimeMs: stat.mtimeMs,
-        atimeMs: stat.atimeMs
-      }
-    } catch (_) {
-      return { path: filePath, exists: false }
-    }
-  }))
-}
-
-/**
  * 把「用户在文件选择框里挑的那个文件」解析成某条视频记录该有的字段值。
  *
  * 用于「重新关联到…」：文件被改名/挪走后，用户手动指认它现在是哪个文件。
@@ -783,6 +759,5 @@ module.exports = {
   getVideoCoverRelativePath,
   saveVideoCoverFromFile,
   saveVideoCoverFromDataUrl,
-  deleteVideoCover,
-  statVideoFiles
+  deleteVideoCover
 }

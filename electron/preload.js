@@ -207,8 +207,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   videoOpen: (payload) => ipcRenderer.invoke('video-open', payload),
   // 打开文件所在文件夹并选中
   videoReveal: (filePath) => ipcRenderer.invoke('video-reveal', filePath),
-  // 批量取文件时间戳（atime 兜底统计打开次数）
-  videoStat: (filePaths) => ipcRenderer.invoke('video-stat', filePaths),
+  // 外部播放统计（PotStats 子进程，走 PotPlayer 官方 IPC）的挂载状态
+  potStatsStatus: () => ipcRenderer.invoke('potstats-status'),
+  // 立刻做一次 ini 全库对账（「重新扫描」时用；ini 是外部播放统计的唯一事实来源）
+  potStatsSync: (payload) => ipcRenderer.invoke('potstats-sync', payload),
   // 「重新关联到…」：校验用户挑的新文件并算出该记录应有的字段
   videoRelink: (payload) => ipcRenderer.invoke('video-relink', payload),
   // 「整个文件夹重新关联到…」：指认丢失目录的新位置，批量算好每条的字段
