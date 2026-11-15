@@ -41,9 +41,10 @@ let mainWindow = null
  * @param {Function} getMinimizeToTrayEnabled - 获取最小化到托盘功能状态
  * @param {Function} getSystemTray - 获取系统托盘实例的函数
  * @param {Function} displayBalloon - 显示托盘通知的函数
+ * @param {boolean} [silentStart=false] - 静默启动（开机自启带 --silent 时）：建好窗口但不弹出来，只留托盘图标
  * @returns {BrowserWindow} 主窗口实例
  */
-function createMainWindow(isDev, getMinimizeToTrayEnabled, getSystemTray, displayBalloon) {
+function createMainWindow(isDev, getMinimizeToTrayEnabled, getSystemTray, displayBalloon, silentStart = false) {
   // 如果窗口已存在，直接返回
   if (mainWindow && !mainWindow.isDestroyed()) {
     return mainWindow
@@ -214,10 +215,17 @@ function createMainWindow(isDev, getMinimizeToTrayEnabled, getSystemTray, displa
   // 窗口准备好后显示
   mainWindow.once('ready-to-show', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.show()
-      
-      // 开发环境下自动打开开发者工具
-      if (isDev) {
+      // 静默启动（开机自启带 --silent）：窗口建好但**不弹出来**，开机后只有托盘图标。
+      // 刻意不写成「先 show() 再 hide()」：那样会在屏幕上闪一下，还会抢一次焦点。
+      // 托盘不在这里创建 —— main.js 在 whenReady 里无条件建，所以隐藏窗口也有托盘。
+      if (silentStart) {
+        console.log('[MainWindow] 静默启动：窗口保持隐藏，可用托盘图标唤出')
+      } else {
+        mainWindow.show()
+      }
+
+      // 开发环境下自动打开开发者工具（静默启动时不弹，免得 DevTools 窗口也算"弹窗"）
+      if (isDev && !silentStart) {
         mainWindow.webContents.openDevTools()
       }
     }

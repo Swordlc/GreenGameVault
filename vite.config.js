@@ -11,6 +11,19 @@ export default defineConfig({
     }
   },
   base: './',
+  esbuild: {
+    // 生产包里剔掉调试日志（Vite 会把这里的选项展开进最终的 esbuild minify 阶段）。
+    //
+    // 为什么必须剔：保存热路径曾经**按记录**打日志 ——
+    // 视频页 6476 条记录 = 每次保存 12954 次 console.log + 一次 ~3MB 对象图 dump，
+    // 连续改几十个标签/封面就把渲染层拖垮（整个电脑卡顿、游戏掉帧）。
+    // 代码里那份日志已经删了（见 src/components/GenericResourceView.vue 的 saveData），
+    // 这里再加一道闸：将来谁忘了，也不会再进发行版。
+    //
+    // 刻意保留 console.warn / console.error：真出问题时还要靠它们。
+    pure: ['console.log', 'console.info', 'console.debug'],
+    drop: ['debugger']
+  },
   build: {
     outDir: 'dist',
     assetsDir: 'assets',

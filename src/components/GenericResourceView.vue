@@ -101,6 +101,49 @@
             @click="handleClearRecycleBin"
           >🧹 清空回收站</button>
           <button class="video-mini-btn" @click="handleRescanVideoLibrary">🔄 重新扫描</button>
+          <!-- 多选批量：一键全选当前筛选结果（跨分页）/ 取消选择（2026-10-10） -->
+          <button
+            v-if="selectableFilteredCount > 0"
+            class="video-mini-btn"
+            :title="`一次选中当前筛选/搜索命中的全部 ${selectableFilteredCount} 个视频（跨分页；磁盘上已丢失的记录不会被选中）`"
+            @click="handleSelectAllFiltered"
+          >☑ 全选 ({{ selectableFilteredCount }})</button>
+          <button
+            v-if="selectedItems.size > 0"
+            class="video-mini-btn"
+            title="取消当前所有选择"
+            @click="handleClearSelection"
+          >✖ 取消选择（{{ selectedItems.size }}）</button>
+        </div>
+      </div>
+
+      <!-- 游戏页多选：全选当前筛选结果 / 取消选择 / 从选中项里随机挑一个开玩（2026-11-07） -->
+      <div
+        v-if="!isVideoPage && (isMultiSelectMode || selectedItems.size > 0)"
+        class="game-selection-bar"
+      >
+        <span class="game-selection-count">
+          多选模式 · 已选 <strong>{{ selectedItems.size }}</strong> 个游戏
+        </span>
+        <div class="game-selection-actions">
+          <button
+            v-if="selectableFilteredCount > 0"
+            class="game-selection-btn"
+            :title="`一次选中当前筛选/搜索命中的全部 ${selectableFilteredCount} 个游戏（跨分页；磁盘上已丢失的资源不会被选中）`"
+            @click="handleSelectAllFiltered"
+          >☑ 全选 ({{ selectableFilteredCount }})</button>
+          <button
+            v-if="selectedItems.size > 0"
+            class="game-selection-btn"
+            title="取消当前所有选择"
+            @click="handleClearSelection"
+          >✖ 取消选择（{{ selectedItems.size }}）</button>
+          <button
+            v-if="selectedItems.size > 0"
+            class="game-selection-btn is-primary"
+            title="从当前选中的游戏里随机挑一个启动"
+            @click="handleRandomPlaySelected"
+          >🎲 随机游玩一个</button>
         </div>
       </div>
 
@@ -311,6 +354,31 @@
         </div>
       </div>
     </div>
+
+    <!-- 标签格式刷：「覆盖粘贴」的二次确认（覆盖会清掉目标原有的标签与作者，且不可撤销） -->
+    <div v-if="showPasteTagFormatConfirm" class="modal-overlay" @click="closePasteTagFormatConfirm">
+      <div class="modal-content" @click.stop>
+        <div class="modal-header">
+          <h3>覆盖粘贴标签格式</h3>
+          <button class="btn-close" @click="closePasteTagFormatConfirm">✕</button>
+        </div>
+        <div class="modal-body">
+          <p>确定把刷子上的格式<strong>覆盖</strong>到 {{ pasteTagFormatPendingTargets.length }} 个视频上吗？</p>
+          <p style="color: var(--text-secondary); font-size: 0.9rem; margin-top: 10px;">
+            这些视频<strong>原有的标签与作者会被清空</strong>，换成刷子上的内容，且无法撤销。<br>
+            如果你想保留它们原有的标签，请改用「粘贴标签格式（合并）」。
+          </p>
+          <p v-if="tagFormatClipboard" style="color: var(--text-secondary); font-size: 0.9rem; margin-top: 10px;">
+            刷子上的内容 —— 标签：{{ tagFormatClipboard.tags.length ? tagFormatClipboard.tags.join('、') : '（空）' }}；
+            作者：{{ tagFormatClipboard.author.length ? tagFormatClipboard.author.join('、') : '（空）' }}
+          </p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-cancel" @click="closePasteTagFormatConfirm">取消</button>
+          <button class="btn-confirm" @click="confirmPasteTagFormat" style="background: #ef4444;">确认覆盖</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- 批量导入对话框 -->
@@ -321,6 +389,26 @@
     :folder-path="batchImportFolderPath"
     @close="closeBatchImportDialog"
     @confirm="handleBatchImportConfirm"
+  />
+
+  <!-- 左栏标签编辑：重命名 / 合并 / 移除（先出三动作浮层，再进具体弹窗） -->
+  <TagOpsDialog
+    :visible="tagOps.visible"
+    :mode="tagOps.mode"
+    :tag-name="tagOps.tagName"
+    :field-label="tagOps.fieldLabel"
+    :is-array="tagOps.isArray"
+    :all-tags="tagOps.allTags"
+    :page-affected="tagOps.pageAffected"
+    :global-affected="tagOps.globalAffected"
+    :preview-loading="tagOps.previewLoading"
+    :preview-error="tagOps.previewError"
+    :x="tagOps.x"
+    :y="tagOps.y"
+    @choose-mode="chooseTagOpsMode"
+    @preview-request="handleTagOpsPreviewRequest"
+    @confirm="confirmTagOps"
+    @cancel="closeTagOps"
   />
 </template>
 
@@ -360,15 +448,43 @@ import { useVideoLibrary } from '../composables/video/useVideoLibrary'
 import { filterVisibleFolders, folderContainsVideo } from '../utils/videoFolderFilter'
 // 视频页：丢失记录判定（「主视图只显示磁盘上真实存在的视频」用它把关）
 import { isMissingItem } from '../utils/videoRelink'
+import {
+  readTagFormat,
+  readFormatField,
+  writeFormatField,
+  computeTagFormatPaste,
+  type TagFormatPasteMode
+} from '../utils/videoTagFormat'
 // 视频页：主视图到底显示哪些视频（子树筛选池 → 收窄到当前层；纯函数）
 import { filterVisibleVideoItems } from '../utils/videoVisibility'
 import { collectSearchTexts, matchesFuzzy } from '../utils/fuzzySearch'
+import {
+  extractVideoFilePaths,
+  pickSelectableEntries,
+  resolvePlaylistNaming,
+  describePotPlayerNamedResult,
+  describeClipboardResult
+} from '../utils/videoBatchTools'
 // 编辑对话框按字段名取候选，这里把「筛选器 key → 字段名」的映射补齐
 import { buildTagsByField } from '../utils/filterFieldMap'
+// 游戏首次入库：从上层目录名识别「游戏名 / 开发商」（拖拽 / 批量导入与编辑对话框共用）
+import { detectGameInfoFromPath } from '../utils/gameInfoAutoDetect'
 // 以下两个 image composable 服务于【游戏详情页的截图浏览】，不是图片资源类型遗留，请勿删除
 import { useImagePages } from '../composables/image/useImagePages'
 import { useImageCache } from '../composables/image/useImageCache'
 import ResourcesEditDialog from './ResourcesEditDialog.vue'
+// 左栏标签的重命名 / 合并 / 移除（2026-10-13，1.5.0）
+import TagOpsDialog from './TagOpsDialog.vue'
+import {
+  applyTagValuesToItems,
+  changesToValueMap,
+  describeTagOpError,
+  describeTagOpResult,
+  describeUndoResult,
+  estimateMergeAffected,
+  rewriteFilterSelection,
+  type TagOpBackupInfo
+} from '../utils/tagOps'
 import type { FilterItem } from '../types/filter'
 import coverManager from '../utils/CoverManager.ts'
 
@@ -395,6 +511,7 @@ export default defineComponent({
     BatchAddTagDialog,
     BatchDeleteTagDialog,
     BatchDeleteConfirmDialog,
+    TagOpsDialog,
     FunGrid
   },
   emits: ['filter-data-updated'],
@@ -515,7 +632,19 @@ export default defineComponent({
 
     // 批量删除确认对话框相关
     const showBatchDeleteConfirmDialog = ref(false)
-    
+
+    /**
+     * 标签格式刷的「刷子」：右键一张视频卡「复制标签格式」后，把那张卡的
+     * 标签与作者存成纯数组快照。null = 刷子上还没取色。
+     *
+     * ⚠️ 必须存**快照**（普通数组），不能存那张卡的 item：
+     *    存 item 等于存了 Vue 的响应式代理，源卡片以后一改，「刷子里的颜色」就跟着漂了。
+     */
+    const tagFormatClipboard = ref<{ tags: string[], author: string[] } | null>(null)
+    /** 覆盖粘贴的二次确认（覆盖会清掉目标原有的标签/作者） */
+    const showPasteTagFormatConfirm = ref(false)
+    const pasteTagFormatPendingTargets = ref<any[]>([])
+
     /**
      * 从文件路径提取资源名称
      */
@@ -647,10 +776,13 @@ export default defineComponent({
             }
             
             // 创建匹配到的资源类型
+            // 游戏首次入库：从上层目录名识别游戏名 / 开发商（`[开发商] 游戏名` 这类目录）
+            const detectedGameInfo = !isVideoPage.value ? detectGameInfoFromPath(filePath) : null
             const resourceData: any = {
               id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
               resourceType: 'game', // GreenGameVault 仅保留游戏类型
-              name: extractNameFromPath(file.name),
+              name: detectedGameInfo?.name || extractNameFromPath(file.name),
+              developers: detectedGameInfo?.developers || [],
               description: '',
               tags: [],
               resourcePath: filePath,
@@ -745,17 +877,16 @@ export default defineComponent({
         throw new Error('不在 Electron 环境或数据库 API 不可用，无法保存')
       }
       const saveableData = items.value.map(item => (item as any).getSaveData())
-      console.log(`[GenericResourceView] 保存页面 ${pageId} 数据到数据库，共 ${saveableData.length} 条记录`)
-      console.log('[GenericResourceView] saveableData 完整内容:', saveableData)
-      saveableData.forEach((item, index) => {
-        console.log(`[GenericResourceView] 第 ${index} 条记录 - id: ${item.id}, resourceType: ${item.resourceType}`)
-        console.log(`[GenericResourceView] 第 ${index} 条记录 所有字段:`, Object.keys(item))
-      })
+      // ⚠️ 这里曾经有一段「逐条打印 + 把整个数组丢进 console」的调试日志。
+      //    视频页 6476 条记录 = **每次保存 12954 次 console.log** + 一次 ~3MB 对象图 dump
+      //    （每条还要额外 Object.keys() 分配一个数组）。连续改几十个标签/封面时，
+      //    渲染层主线程被日志占满、Chromium 的 console 存储一路膨胀，
+      //    表现就是「整个电脑卡顿、其他游戏掉帧，关掉本应用才恢复」。
+      //    **绝不要在保存热路径里按条打日志** —— 回归测试见 src/tests/saveHotPathLogging.spec.ts。
       const result = await window.electronAPI.sqliteSavePageResources(pageId, saveableData)
       if (!result || !result.ok) {
         throw new Error((result && result.message) ? result.message : '保存页面数据到数据库失败')
       }
-      console.log(`[GenericResourceView] 页面 ${pageId} 数据保存成功`)
       return true
     }
 
@@ -998,6 +1129,114 @@ export default defineComponent({
       )
     }
 
+    /* ------------------------- 标签格式刷（复制标签+作者，刷到别的视频上） ------------------------- */
+
+    /**
+     * 右键「复制标签格式」：把这张卡的标签 + 作者存到「刷子」上。
+     * 存的是快照（`readTagFormat` 返回普通数组），源卡片之后再改都不会影响已取下的颜色。
+     * 纯逻辑与合并/覆盖的语义都在 utils/videoTagFormat.ts（有单测）。
+     */
+    const copyTagFormat = (item: any) => {
+      const snapshot = readTagFormat(item)
+      if (!snapshot) {
+        notify.toast('warning', '复制标签格式', '这张卡既没有标签也没有作者，没有可复制的内容')
+        return
+      }
+      tagFormatClipboard.value = { tags: [...snapshot.tags], author: [...snapshot.author] }
+      notify.toast(
+        'success',
+        '已复制标签格式',
+        `标签 ${snapshot.tags.length} 个、作者 ${snapshot.author.length} 个已取到刷子上；` +
+          '再右键 1 个或多个视频，选「粘贴标签格式（合并）」或「（覆盖）」'
+      )
+    }
+
+    /** 这次要刷哪些视频：多选模式刷全部选中项，否则只刷右键的那一张 */
+    const resolveFormatTargets = (item: any): any[] => {
+      if (isMultiSelectMode.value && selectedItems.value.size > 0) {
+        return items.value.filter((it: any) => selectedItems.value.has(it.id?.value || it.id))
+      }
+      return item ? [item] : []
+    }
+
+    /**
+     * 右键「粘贴标签格式」
+     * @param mode merge = 并集（保留目标原有标签）；overwrite = 整片覆盖（清掉目标原有的）
+     */
+    const handlePasteTagFormat = (item: any, mode: TagFormatPasteMode) => {
+      const clip = tagFormatClipboard.value
+      if (!clip) {
+        notify.toast('warning', '粘贴标签格式', '刷子上还没有颜色：先在一张视频卡片上右键「复制标签格式」')
+        return
+      }
+      const targets = resolveFormatTargets(item)
+      if (targets.length === 0) {
+        notify.toast('warning', '粘贴标签格式', '没有选中任何视频')
+        return
+      }
+      // 覆盖会**清掉**目标原有的标签与作者，且没有撤销 —— 必须先确认，绝不静默执行
+      if (mode === 'overwrite') {
+        pasteTagFormatPendingTargets.value = targets
+        showPasteTagFormatConfirm.value = true
+        return
+      }
+      void applyTagFormat(targets, 'merge')
+    }
+
+    /** 真正落字段 + 只落库一次（批量全部改完再写库，避免 N 次全量保存） */
+    const applyTagFormat = async (targets: any[], mode: TagFormatPasteMode) => {
+      const clip = tagFormatClipboard.value
+      if (!clip) return
+
+      let changed = 0
+      let skipped = 0
+      for (const target of targets) {
+        if (!target) continue
+        const current = {
+          tags: readFormatField(target, 'tags'),
+          author: readFormatField(target, 'author')
+        }
+        const next = computeTagFormatPaste(current, clip, mode)
+        if (!next.changed) {
+          skipped++
+          continue
+        }
+        writeFormatField(target, 'tags', next.tags)
+        writeFormatField(target, 'author', next.author)
+        changed++
+      }
+
+      if (changed === 0) {
+        notify.toast('info', '粘贴标签格式', `${targets.length} 个视频的标签/作者已经是这个样子了，没有改动`)
+        return
+      }
+
+      try {
+        await saveData()
+      } catch (error: any) {
+        console.error('[GenericResourceView] 粘贴标签格式保存失败:', error)
+        notify.toast('error', '粘贴标签格式', `写入失败：${error?.message || '未知错误'}`)
+        return
+      }
+
+      notify.toast(
+        'success',
+        mode === 'overwrite' ? '已覆盖粘贴标签格式' : '已合并粘贴标签格式',
+        `${changed} 个视频已更新${skipped > 0 ? `，${skipped} 个本来就一样已跳过` : ''}（共 ${targets.length} 个）`
+      )
+    }
+
+    const closePasteTagFormatConfirm = () => {
+      showPasteTagFormatConfirm.value = false
+      pasteTagFormatPendingTargets.value = []
+    }
+
+    const confirmPasteTagFormat = async () => {
+      const targets = pasteTagFormatPendingTargets.value
+      closePasteTagFormatConfirm()
+      await applyTagFormat(targets, 'overwrite')
+    }
+
     const handleBatchDeleteTag = () => {      if (selectedItems.value.size === 0) {
         notify.toast('warning', '批量删除tag', '请先选择要操作的项目')
         return
@@ -1099,7 +1338,14 @@ export default defineComponent({
           return [
             { key: 'batchAddTag', icon: '🏷️', label: '批量增加tag' },
             { key: 'batchDeleteTag', icon: '🏷️', label: '批量删除tag' },
-            { key: 'batchGrabCover', icon: '🎬', label: '批量抽帧设为封面' }
+            { key: 'pasteTagFormatMerge', icon: '🖌️', label: '粘贴标签格式（合并）' },
+            { key: 'pasteTagFormatOverwrite', icon: '🖌️', label: '粘贴标签格式（覆盖）…' },
+            { key: 'batchGrabCover', icon: '🎬', label: '批量抽帧设为封面' },
+            // 批量工具（2026-10-10）：送进 PotPlayer 连着看 / 复制出去做第二份备份。
+            // 两者都只写「播放列表文件」或「剪贴板」，**不动视频文件本体**。
+            { key: 'addToPotPlayer', icon: '🎵', label: '加入 PotPlayer 播放列表' },
+            { key: 'potPlayerPlaylistOnly', icon: '🎵', label: '只生成播放列表文件（不启动 PotPlayer）' },
+            { key: 'copyVideoFiles', icon: '📋', label: '复制文件（去目标文件夹粘贴）' }
           ]
         }
         return [
@@ -1231,12 +1477,245 @@ export default defineComponent({
         const data = filterComposable.getFilterData?.()
         if (data) {
           applyMissingCount(data)
-          emit('filter-data-updated', data)
+          // 「撤销上一次标签操作」的状态跟着筛选器数据一起推给左栏
+          emit('filter-data-updated', {
+            ...data,
+            tagOpsUndo: tagOpsUndo.value,
+            tagOpsRunning: tagOpsBusy.value
+          })
         }
       } catch (error) {
         console.warn('[GenericResourceView] 刷新筛选器数据失败:', error)
       }
     }
+
+    // ===================== 左栏标签编辑（重命名 / 合并 / 移除）=====================
+    // 数据流：FilterSidebar 的编辑图标 → App.vue → window 事件 'tag-edit' → 这里。
+    // 为什么放在页面视图：只有它知道当前页的资源类型（game / video）与内存里的 items；
+    // 改完库还要顺手把内存数据、筛选态一起改掉，否则界面会继续显示已经不存在的旧标签。
+    const tagOpsApi = () => (window as any).electronAPI
+
+    const emptyTagOps = () => ({
+      visible: false,
+      mode: null as null | 'rename' | 'merge' | 'remove',
+      filterKey: '',
+      field: '',
+      resourceType: '',
+      fieldLabel: '',
+      tagName: '',
+      isArray: true,
+      x: 0,
+      y: 0,
+      allTags: [] as FilterItem[],
+      pageAffected: 0,
+      globalAffected: null as number | null,
+      previewLoading: false,
+      previewError: ''
+    })
+    const tagOps = ref(emptyTagOps())
+    const tagOpsBusy = ref(false)
+    const tagOpsUndo = ref<TagOpBackupInfo | null>(null)
+
+    /** 当前页里这些标签影响多少条（弹窗实时显示用；真正的数字以后端全库统计为准） */
+    const computeTagOpsPageAffected = (field: string, from: string[]) =>
+      estimateMergeAffected(items.value as any[], field, from)
+
+    /** 第一步：点编辑图标 → 打开三动作浮层 */
+    const openTagOps = (detail: any) => {
+      const field = detail?.field ? String(detail.field) : ''
+      const resourceType = detail?.resourceType ? String(detail.resourceType) : String((props as any).resourceType || '')
+      if (!field || !resourceType) {
+        notify.toast('error', '这个筛选不能编辑', '它不是真实入库的字段（例如「格式筛选」是按文件名算出来的）')
+        return
+      }
+      const state = ((filterComposable as any).filterStates || {})[detail?.filterKey]
+      const stateItems = state?.items?.value
+      const sourceItems: FilterItem[] = (Array.isArray(stateItems) && stateItems.length > 0)
+        ? stateItems
+        : (Array.isArray(detail?.items) ? detail.items : [])
+      tagOps.value = {
+        ...emptyTagOps(),
+        visible: true,
+        filterKey: String(detail?.filterKey || ''),
+        field,
+        resourceType,
+        fieldLabel: String(detail?.filterTitle || ''),
+        tagName: String(detail?.itemName || ''),
+        isArray: detail?.isArray !== false,
+        x: Number(detail?.x) || 0,
+        y: Number(detail?.y) || 0,
+        allTags: sourceItems.map(item => ({ name: item.name, count: Number(item.count) || 0 }))
+      }
+    }
+
+    const closeTagOps = () => { tagOps.value = emptyTagOps() }
+
+    /**
+     * 预览影响面：让后端拿 `dryRun` 把全库扫一遍（只统计不写库）。
+     * 合并模式下主人勾选变化时会重新预览（在 confirmTagOps 之前的那次由 chooseTagOpsMode 触发）。
+     */
+    const refreshTagOpsPreview = async (override?: { action?: string; from?: string[] }) => {
+      const api = tagOpsApi()
+      const state = tagOps.value
+      if (!state.visible || !state.field) return
+      const action = (override?.action || state.mode) as any
+      if (!action) return
+      const from = override?.from || [state.tagName]
+      state.pageAffected = computeTagOpsPageAffected(state.field, from)
+      if (!api?.tagOpApply) {
+        state.previewError = '当前环境不支持标签编辑'
+        return
+      }
+      state.previewLoading = true
+      state.previewError = ''
+      try {
+        const result = await api.tagOpApply({
+          resourceType: state.resourceType,
+          field: state.field,
+          action,
+          from,
+          to: action === 'remove' ? null : (state.tagName || null),
+          dryRun: true
+        })
+        if (result?.ok) {
+          state.globalAffected = Number(result.affected) || 0
+        } else {
+          // dryRun 的失败基本都是"改名撞名/没有命中"这类真实问题，正好提前告诉主人
+          const text = describeTagOpError(result)
+          state.previewError = text
+          state.globalAffected = null
+        }
+      } catch (error: any) {
+        state.previewError = `统计失败：${error?.message || error}`
+        state.globalAffected = null
+      } finally {
+        state.previewLoading = false
+      }
+    }
+
+    /** 选了动作（重命名 / 合并 / 移除）→ 先看一眼影响面 */
+    const chooseTagOpsMode = async (mode: 'rename' | 'merge' | 'remove') => {
+      tagOps.value.mode = mode
+      tagOps.value.pageAffected = computeTagOpsPageAffected(tagOps.value.field, [tagOps.value.tagName])
+      await refreshTagOpsPreview()
+    }
+
+    /** 合并弹窗里勾选变化时重新统计（页面侧的 from 跟着变） */
+    const handleTagOpsPreviewRequest = async (payload: { action: string; from: string[] }) => {
+      await refreshTagOpsPreview(payload)
+    }
+
+    /** 把内存里的 items 与筛选态同步到"操作后"的样子 */
+    const syncAfterTagOp = (
+      field: string,
+      filterKey: string,
+      op: { action: 'rename' | 'merge' | 'remove'; from: string[]; to: string | null },
+      changes: any[]
+    ) => {
+      const touched = applyTagValuesToItems(items.value as any[], field, changesToValueMap(changes, 'after'))
+      // 就地改动可能不触发依赖 items 的计算属性，这里换一个数组引用逼它重算
+      if (touched > 0) items.value = (items.value as any[]).slice()
+      const state = ((filterComposable as any).filterStates || {})[filterKey]
+      if (state?.selected && state?.excluded) {
+        const next = rewriteFilterSelection(
+          [...(state.selected.value || [])],
+          [...(state.excluded.value || [])],
+          { action: op.action, from: op.from, to: op.to }
+        )
+        state.selected.value = next.selected
+        state.excluded.value = next.excluded
+      }
+      return touched
+    }
+
+    /** 确认执行（真正写库） */
+    const confirmTagOps = async (payload: { action: 'rename' | 'merge' | 'remove'; from: string[]; to: string | null }) => {
+      const api = tagOpsApi()
+      const state = tagOps.value
+      if (!api?.tagOpApply || tagOpsBusy.value) return
+      tagOpsBusy.value = true
+      try {
+        const result = await api.tagOpApply({
+          resourceType: state.resourceType,
+          field: state.field,
+          action: payload.action,
+          from: payload.from,
+          to: payload.to,
+          allowExisting: payload.action === 'merge'
+        })
+        if (!result?.ok) {
+          notify.toast('error', '标签操作未执行', describeTagOpError(result))
+          return
+        }
+        const touched = syncAfterTagOp(state.field, state.filterKey, payload, result.changes || [])
+        notify.toast(
+          'success',
+          '标签操作完成',
+          describeTagOpResult(payload.action, payload.from, payload.to, result, {
+            pageTouched: touched,
+            hasBackup: !!result.backupPath
+          })
+        )
+        closeTagOps()
+        // 先查"还能撤什么"，再推筛选器数据（busy 的复位由下面的 watch 负责再推一次）
+        await refreshTagOpsUndo()
+      } catch (error: any) {
+        notify.toast('error', '标签操作失败', error?.message || String(error))
+      } finally {
+        tagOpsBusy.value = false
+      }
+    }
+
+    /** 查询最近一次可撤销的标签操作（左栏底部的「撤销」） */
+    const refreshTagOpsUndo = async () => {
+      const api = tagOpsApi()
+      if (!api?.tagOpLastBackup) return
+      try {
+        const result = await api.tagOpLastBackup({ resourceType: (props as any).resourceType || '' })
+        tagOpsUndo.value = result?.ok ? (result.backup || null) : null
+      } catch (error) {
+        console.warn('[GenericResourceView] 查询可撤销的标签操作失败:', error)
+        tagOpsUndo.value = null
+      }
+    }
+
+    /** 撤销上一次标签操作 */
+    const handleTagOpUndo = async () => {
+      const api = tagOpsApi()
+      if (!api?.tagOpUndo || tagOpsBusy.value) return
+      tagOpsBusy.value = true
+      try {
+        const result = await api.tagOpUndo({ resourceType: (props as any).resourceType || '' })
+        notify.toast(
+          result?.ok ? 'success' : 'error',
+          result?.ok ? '已撤销标签操作' : '撤销失败',
+          describeUndoResult(result)
+        )
+        if (result?.ok) {
+          // 撤销同样只改这一个字段，按 id 把内存数据改回去即可（不必重载整页）
+          const restoreValues = changesToValueMap(result.changes || [], 'before')
+          if (restoreValues.size > 0) {
+            const touched = applyTagValuesToItems(items.value as any[], result.field, restoreValues)
+            if (touched > 0) items.value = (items.value as any[]).slice()
+          }
+        }
+        // 先查"还能撤什么"，再推筛选器数据：否则左栏拿到的可撤销状态是旧的
+        await refreshTagOpsUndo()
+      } catch (error: any) {
+        notify.toast('error', '撤销失败', error?.message || String(error))
+      } finally {
+        tagOpsBusy.value = false
+      }
+    }
+
+    // 标签操作的"运行中"状态一变，就把最新的筛选器数据推给左栏。
+    // ⚠️ 这条 watch 不是装饰：左栏的「撤销」按钮是靠 payload 里的 tagOpsRunning 决定禁用的，
+    //    如果只在操作过程中推过一次（那时还是 true），按钮会永远停在禁用状态 ——
+    //    界面 E2E 就是这么抓到的（点了没反应，IPC 压根没被调用）。
+    watch(tagOpsBusy, () => { refreshFilterData() })
+
+    // 打开页面时就查一次：上次会话里做的标签操作也该能撤销
+    refreshTagOpsUndo()
 
     // 视频页：扫描完成、切换目录、进出回收站后刷新左栏筛选器
     if (isVideoPage.value) {
@@ -2071,6 +2550,11 @@ export default defineComponent({
 
     contextMenuHandlers.batchAddTag = () => handleBatchAddTag()
     contextMenuHandlers.batchDeleteTag = () => handleBatchDeleteTag()
+    // 标签格式刷：复制只在单张卡上出现；粘贴在单张 / 多选下都能用
+    // （多选时刷的是 selectedItems，单选时刷的是右键的那一张 —— 见 resolveFormatTargets）
+    contextMenuHandlers.copyTagFormat = (item: any) => copyTagFormat(item)
+    contextMenuHandlers.pasteTagFormatMerge = (item: any) => handlePasteTagFormat(item, 'merge')
+    contextMenuHandlers.pasteTagFormatOverwrite = (item: any) => handlePasteTagFormat(item, 'overwrite')
     contextMenuHandlers.batchDelete = () => handleBatchDelete()
     // 回收站：单条 / 批量「从库中移除记录」（磁盘文件一动不动）
     contextMenuHandlers['remove-record'] = (item: any) => handleRemoveSingleRecord(item)
@@ -2810,10 +3294,15 @@ export default defineComponent({
           }
 
           // 创建资源数据
+          // 游戏首次入库：从上层目录名识别游戏名 / 开发商（`[开发商] 游戏名` 这类目录）
+          const detectedGameInfo = matchedResourceType === 'Game'
+            ? detectGameInfoFromPath(fullFilePath)
+            : null
           const resourceData: any = {
             id: `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
             resourceType: 'game', // GreenGameVault 仅保留游戏类型
-            name: extractNameFromPath(fileName),
+            name: detectedGameInfo?.name || extractNameFromPath(fileName),
+            developers: detectedGameInfo?.developers || [],
             description: '',
             tags: [],
             resourcePath: fullFilePath,
@@ -3090,6 +3579,183 @@ export default defineComponent({
       })
     })
 
+    /* --------- 视频页：多选批量「加入 PotPlayer 播放列表 / 复制文件」（2026-10-10） --------- */
+
+    /**
+     * 「全选当前筛选结果」的可选条目。
+     *
+     * 口径（主人定的）：**当前这一层 + 当前标签筛选/搜索命中的全部**（跨分页），
+     * 但排除磁盘上已经丢失的记录 —— 那些文件加进播放列表只会得到打不开的条目，复制更不可能。
+     * 回收站模式下这里自然为空 → 按钮不出现，比"选中了却什么都做不了"诚实。
+     */
+    const selectableFilteredItems = computed<any[]>(() =>
+      pickSelectableEntries(filteredItems.value || [], isMissingItem)
+    )
+    const selectableFilteredCount = computed(() => selectableFilteredItems.value.length)
+
+    /** 全选：自动进多选模式，并把当前筛选结果一次性勾上 */
+    const handleSelectAllFiltered = () => {
+      const list = selectableFilteredItems.value
+      if (list.length === 0) {
+        notify.toast('warning', '全选', isVideoPage.value ? '当前筛选结果里没有可以处理的视频' : '当前筛选结果里没有可以处理的游戏')
+        return
+      }
+      isMultiSelectMode.value = true
+      const next = new Set<any>()
+      for (const item of list) next.add(item.id?.value || item.id)
+      selectedItems.value = next
+      const unit = isVideoPage.value ? '个视频' : '个游戏'
+      const tail = isVideoPage.value ? '不含丢失的文件' : '不含磁盘上已丢失的资源'
+      notify.toast('success', '已全选筛选结果', `已选中 ${next.size} ${unit}（跨分页，${tail}）`)
+    }
+
+    /** 清空选择（留在多选模式里，方便重新框选） */
+    const handleClearSelection = () => {
+      const count = selectedItems.value.size
+      selectedItems.value = new Set<any>()
+      if (count > 0) notify.toast('success', '已取消选择', `取消了 ${count} 个${isVideoPage.value ? '视频' : '游戏'}的选择`)
+    }
+
+    /**
+     * 从当前选中的游戏里随机挑一个启动（2026-11-07 主人需求）。
+     *
+     * 口径：
+     *   - 只在「多选模式 + 已选游戏」时出现；
+     *   - 排除磁盘上已丢失的记录（启动只会失败）；
+     *   - 排除正在运行的游戏（启动 handler 会弹「强制结束」确认框，不是"随机再开一个"的语义）。
+     * 若全都不可用，如实提示，不静默什么都不做。
+     */
+    const handleRandomPlaySelected = async () => {
+      if (isVideoPage.value) return
+      const selected = (items.value || []).filter((item: any) =>
+        selectedItems.value.has(item.id?.value || item.id)
+      )
+      if (selected.length === 0) {
+        notify.toast('warning', '随机游玩', '请先选择要参与随机的游戏')
+        return
+      }
+
+      const available = selected.filter((item: any) => !isMissingItem(item) && !isResourceRunning(item))
+      if (available.length === 0) {
+        notify.toast('warning', '随机游玩', '选中的游戏要么磁盘上已丢失，要么正在运行中，没有可以启动的')
+        return
+      }
+
+      const pick = available[Math.floor(Math.random() * available.length)]
+      const name = String(
+        BaseResources.extractPrimitiveValue(pick.name?.value ?? pick.name) ?? '未命名游戏'
+      ) || '未命名游戏'
+
+      notify.toast(
+        'info',
+        '随机游玩',
+        available.length < selected.length
+          ? `🎲 抽中了「${name}」（已跳过 ${selected.length - available.length} 个不可启动的）`
+          : `🎲 抽中了「${name}」，正在启动…`
+      )
+
+      try {
+        await handleResourceAction(pick)
+      } catch (error: any) {
+        console.error('[GenericResourceView] 随机游玩启动失败:', error)
+        notify.toast('error', '随机游玩', `启动「${name}」失败：${error?.message || '未知错误'}`)
+      }
+    }
+
+    /** 当前多选中的条目（与批量抽帧 / 批量改标签同一口径） */
+    const resolveSelectedVideoItems = (): any[] =>
+      (items.value || []).filter((item: any) => selectedItems.value.has(item.id?.value || item.id))
+
+    /** 批量工具要用到的主进程 API（非 Electron 环境返回 null，调用方负责提示） */
+    const videoToolsApi = (): any =>
+      typeof window !== 'undefined' ? (window as any).electronAPI : null
+
+    /**
+     * 取出「这次要处理的文件」——选中的条目 → 绝对路径。
+     * 没有 `resourcePath` 的记录（解绑目录等）在这里被丢掉，并如实告诉主人丢了多少。
+     */
+    const resolveSelectedVideoFiles = (): { files: string[], targets: number } => {
+      const targets = resolveSelectedVideoItems()
+      return { files: extractVideoFilePaths(targets), targets: targets.length }
+    }
+
+    /**
+     * 加入 PotPlayer 播放列表（**只走这一条路**，2026-10-10 真机实测后的定论）。
+     *
+     * 落地：在 `<PotPlayer 安装目录>\Playlist\GGV-<标签>.dpl` 写一份纯文本播放列表
+     * （格式见 electron/services/potplayer-playlist.js），再用**一个参数**把它交给 PotPlayer
+     * （`/add /current`，实测语义 = 追加到它当前播放列表末尾）。
+     *
+     * 只传 1 个参数是刻意的：几百个中文长路径拼进命令行会直接爆长度上限。
+     * 重复执行＝原地刷新同一份列表，不会堆一堆文件。
+     *
+     * 为什么没有"覆盖默认列表"：实测证明那份默认列表文件是 PotPlayer 的**输出**而非输入，
+     * 它启动时根本不读（它的设置 `SavePlayList=0`）—— 做不到的事就不摆出来。
+     *
+     * @param open true = 同时交给 PotPlayer（追加）；false = 只生成文件
+     */
+    const writePotPlayerPlaylist = async (open: boolean) => {
+      const api = videoToolsApi()
+      const title = open ? '加入播放列表' : '生成播放列表'
+      const { files, targets } = resolveSelectedVideoFiles()
+      if (targets === 0) {
+        notify.toast('warning', title, '请先选择要处理的视频')
+        return
+      }
+      if (files.length === 0) {
+        notify.toast('warning', title, '选中的记录里没有可取的文件路径')
+        return
+      }
+      if (!api?.potPlayerWritePlaylist) {
+        notify.toast('error', title, '当前环境不支持（请在生产版应用里使用）')
+        return
+      }
+
+      const naming = resolvePlaylistNaming(activeTagFilter.value, searchQuery.value)
+      const result = await api.potPlayerWritePlaylist({
+        files,
+        tagNames: naming.tagNames,
+        fallbackName: naming.fallbackName,
+        open
+      })
+      const toast = describePotPlayerNamedResult(result)
+      notify.toast(toast.type, toast.title, toast.message)
+    }
+
+    const handleAddToPotPlayer = () => writePotPlayerPlaylist(true)
+    const handlePotPlayerPlaylistOnly = () => writePotPlayerPlaylist(false)
+
+    /**
+     * 复制文件到剪贴板 —— 等同在资源管理器里按 Ctrl+C。
+     *
+     * 🔴 GGV **不碰文件本体**：只把路径交给 Windows，真正的复制粘贴由资源管理器完成，
+     * 主人可以粘到网盘客户端做第二份备份。
+     */
+    const handleCopyVideoFiles = async () => {
+      const api = videoToolsApi()
+      const { files, targets } = resolveSelectedVideoFiles()
+      if (targets === 0) {
+        notify.toast('warning', '复制文件', '请先选择要复制的视频')
+        return
+      }
+      if (files.length === 0) {
+        notify.toast('warning', '复制文件', '选中的记录里没有可取的文件路径')
+        return
+      }
+      if (!api?.clipboardCopyFiles) {
+        notify.toast('error', '复制文件', '当前环境不支持（请在生产版应用里使用）')
+        return
+      }
+
+      const result = await api.clipboardCopyFiles({ files })
+      const toast = describeClipboardResult(result)
+      notify.toast(toast.type, toast.title, toast.message)
+    }
+
+    contextMenuHandlers.addToPotPlayer = () => handleAddToPotPlayer()
+    contextMenuHandlers.potPlayerPlaylistOnly = () => handlePotPlayerPlaylistOnly()
+    contextMenuHandlers.copyVideoFiles = () => handleCopyVideoFiles()
+
     /* --------------------- 视频页：回收站（丢失的文件）UI --------------------- */
 
     /** 回收站当前钻到的层级（相对当前浏览层） */
@@ -3347,6 +4013,20 @@ export default defineComponent({
       showBatchAddTagDialog,
       closeBatchAddTagDialog,
       handleBatchAddTagConfirm,
+      // 标签格式刷（复制标签+作者 → 合并/覆盖粘贴到 1 张或多张卡）
+      tagFormatClipboard,
+      copyTagFormat,
+      handlePasteTagFormat,
+      showPasteTagFormatConfirm,
+      pasteTagFormatPendingTargets,
+      confirmPasteTagFormat,
+      closePasteTagFormatConfirm,
+      // 视频页多选批量（2026-10-10）：全选当前筛选结果 + 加入 PotPlayer 播放列表 / 复制文件
+      selectableFilteredCount,
+      handleSelectAllFiltered,
+      handleClearSelection,
+      // 游戏页多选（2026-11-07）：从选中项里随机挑一个启动
+      handleRandomPlaySelected,
       // 全局「使用最新截图作为封面」
       handleBatchLatestScreenshotCover,
       // 批量删除tag对话框相关
@@ -3468,7 +4148,18 @@ export default defineComponent({
       handleEditConfirm: resourcePage.handleEditConfirm,
       // 供 App.vue 游戏时长/保存逻辑使用（与 GameView 兼容）：games 即 items，saveGames 即 saveData
       games: items,
-      saveGames: saveData
+      saveGames: saveData,
+      // 左栏标签编辑（重命名 / 合并 / 移除）与撤销（2026-10-13，1.5.0）
+      tagOps,
+      tagOpsBusy,
+      tagOpsUndo,
+      openTagOps,
+      closeTagOps,
+      chooseTagOpsMode,
+      handleTagOpsPreviewRequest,
+      confirmTagOps,
+      handleTagOpUndo,
+      refreshTagOpsUndo
     }
     
     // 调试：检查 setup 返回的对象中的筛选方法
@@ -3538,7 +4229,12 @@ export default defineComponent({
         if (typeof (this as any).applyMissingCount === 'function') {
           (this as any).applyMissingCount(filterData)
         }
-        this.$emit('filter-data-updated', filterData)
+        // 左栏底部的「撤销上一次标签操作」靠这两个字段（有没有得撤 / 正在撤）
+        this.$emit('filter-data-updated', {
+          ...filterData,
+          tagOpsUndo: (this as any).tagOpsUndo || null,
+          tagOpsRunning: !!(this as any).tagOpsBusy
+        })
       } else {
         console.warn('[GenericResourceView] getFilterData 方法不存在，无法更新筛选器数据')
       }
@@ -3546,6 +4242,17 @@ export default defineComponent({
     // 处理来自 App.vue 的筛选器事件（动态支持所有筛选器，完全按照 GameView 的方式）
     handleFilterEvent(event, data) {
       console.log('GenericResourceView handleFilterEvent:', event, data)
+
+      // 左栏标签编辑（2026-10-13，1.5.0）：这两个不是"筛选"事件，交给 setup 里的实现
+      if (event === 'tag-edit') {
+        (this as any).openTagOps?.(data)
+        return
+      }
+      if (event === 'tag-op-undo') {
+        (this as any).handleTagOpUndo?.()
+        return
+      }
+
       const filterKey = data?.filterKey || data
       
       // 动态获取筛选方法名
@@ -3928,6 +4635,62 @@ export default defineComponent({
   .modal-content {
     width: 95vw;
     margin: var(--spacing-xl);
+  }
+}
+
+/* ========================================================================== */
+/* 游戏页：多选操作条（全选 / 取消选择 / 随机游玩）                           */
+/* ========================================================================== */
+
+.game-selection-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+
+.game-selection-count {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  white-space: nowrap;
+
+  strong {
+    color: var(--accent-color, #66c0f4);
+  }
+}
+
+.game-selection-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.game-selection-btn {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.15s;
+
+  &:hover {
+    background: var(--bg-primary);
+  }
+
+  &.is-primary {
+    color: var(--accent-color, #66c0f4);
+    border-color: rgba(102, 192, 244, 0.45);
+
+    &:hover {
+      background: rgba(102, 192, 244, 0.12);
+    }
   }
 }
 

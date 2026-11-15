@@ -37,10 +37,59 @@
  * - 使用时间戳生成唯一的文件名。
  */
 
-const { desktopCapturer, app, dialog } = require('electron')
+const { desktopCapturer, app, dialog, nativeImage } = require('electron')
 const fs = require('fs')
 const path = require('path')
 const windowsUtils = require('../utils/windows-utils')
+const windowCapture = require('./window-capture')
+
+/**
+ * 按目标格式把一帧图像编码成 Buffer。
+ * @param {Electron.NativeImage} image - 图像
+ * @param {string} format - png / jpg / jpeg / webp
+ * @param {number} quality - 1-100（仅 jpg / webp 有效）
+ * @returns {Buffer}
+ */
+function encodeImage(image, format, quality) {
+  switch (String(format || 'png').toLowerCase()) {
+    case 'jpg':
+    case 'jpeg':
+      return image.toJPEG(quality)
+    case 'webp':
+      return image.toWebP(quality)
+    case 'png':
+    default:
+      return image.toPNG()
+  }
+}
+
+/**
+ * 老路径（回退用）：整窗口缩略图。
+ *
+ * ⚠️ 这条路会给**系统里每个窗口**都抓一张 1920×1080 缩略图，是 1.5.0 之前
+ * "抽帧越多游戏越卡"的元凶，现在只在**单窗口抓帧失败**时兜底使用 ——
+ * 宁可多花点资源把图截到，也不能因为新方案失效就让主人截不到图。
+ *
+ * @param {{id: string, name?: string}} targetSource - 目标窗口源
+ * @param {string} format - 图片格式
+ * @param {number} quality - 质量
+ * @returns {Promise<Buffer|null>} 编码后的图片，失败返回 null
+ */
+async function captureViaLegacyThumbnail(targetSource, format, quality) {
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ['window'],
+      thumbnailSize: { width: 1920, height: 1080 }
+    })
+    const match = sources.find(source => source.id === targetSource.id)
+      || sources.find(source => source.name === targetSource.name)
+    if (!match || !match.thumbnail || match.thumbnail.isEmpty()) return null
+    return encodeImage(match.thumbnail, format, quality)
+  } catch (error) {
+    console.warn('[截图] 回退路径也失败:', error.message)
+    return null
+  }
+}
 
 /**
  * 查找并重命名游戏截图文件夹（如果需要）
@@ -150,9 +199,13 @@ async function takeScreenshot(customDirectory, format = 'png', quality = 90, run
     }
 
     // 获取所有窗口源
+    // ⚠️ thumbnailSize 必须是 0：Electron 只在尺寸为 0 时**跳过缩略图生成**。
+    //    老代码写的是 1920×1080 —— 那等于给系统里每个窗口都抓一张 1080p 位图（约 8.3MB/窗口），
+    //    既是 CPU/GPU 浪费，也是"抽帧越多游戏越卡"的主因（详见 window-capture.js 的说明）。
+    //    这里只需要窗口名字和 id 来做匹配，真正的画面由 windowCapture 单独抓目标窗口。
     const sources = await desktopCapturer.getSources({
       types: ['window'],
-      thumbnailSize: { width: 1920, height: 1080 }
+      thumbnailSize: { width: 0, height: 0 }
     })
 
     if (sources.length === 0) {
@@ -167,12 +220,13 @@ async function takeScreenshot(customDirectory, format = 'png', quality = 90, run
     let focusedWindowTitle = null
     if (process.platform === 'win32') {
       try {
-        focusedWindowPID = await windowsUtils.getActiveWindowPID()
-        console.log('当前聚焦窗口的 PID:', focusedWindowPID)
-        
-        // 获取聚焦窗口的标题（用于后续匹配）
-        focusedWindowTitle = await windowsUtils.getWindowTitleByPID(focusedWindowPID)
-        console.log('当前聚焦窗口的标题:', focusedWindowTitle)
+        // 一次 PowerShell 同时取前台窗口的 PID 与标题。
+        // （以前是两次调用，其中 getActiveWindowPID 每次都要现场 Add-Type 编译一段 C#，
+        //   单次 0.5~1.5 秒的编译开销 × 每次截图 —— 顺手一起省掉。）
+        const foreground = await windowsUtils.getForegroundWindowInfo()
+        focusedWindowPID = foreground && foreground.pid != null ? foreground.pid : null
+        focusedWindowTitle = foreground && foreground.title ? foreground.title : null
+        console.log('当前聚焦窗口:', focusedWindowPID, focusedWindowTitle)
       } catch (error) {
         console.warn('获取聚焦窗口 PID 失败:', error.message)
         // 如果获取失败，使用第一个非系统窗口作为聚焦窗口的备用方案
@@ -218,8 +272,10 @@ async function takeScreenshot(customDirectory, format = 'png', quality = 90, run
       const gamePidMatchesFocused = focusedWindowPID && gamePid === focusedWindowPID
 
       // 先尝试通过PID获取正确的窗口标题（处理编码问题）
+      // ⚠️ 只在"渲染层没给标题"时才去起 PowerShell：游戏进程已经被轮询记录过窗口标题的话，
+      //    这里再查一次纯属重复劳动（每次截图会因此多起 N 个 PowerShell 进程）。
       let pidWindowTitles = []
-      if (gamePid && process.platform === 'win32') {
+      if (gamePid && process.platform === 'win32' && gameWindowTitles.length === 0) {
         try {
           // 通过PID获取窗口标题（使用正确的编码）
           const pidTitle = await windowsUtils.getWindowTitleByPID(gamePid)
@@ -422,7 +478,6 @@ async function takeScreenshot(customDirectory, format = 'png', quality = 90, run
     const windowName = targetSource.name
     // 获取游戏ID（唯一标识符）
     const gameId = targetGameWindow.gameId || gameData.id || 'unknown'
-    const thumbnail = targetSource.thumbnail
 
     console.log('------------------------------')
     console.log('最终选择截图窗口:')
@@ -476,25 +531,38 @@ async function takeScreenshot(customDirectory, format = 'png', quality = 90, run
     const filename = `${fileNameBase.replace(/[<>:"/\\|?*]/g, '_')}_${timestamp}.${format}`
     const filepath = path.join(screenshotsDir, filename)
 
-    // 根据格式保存截图
-    let buffer
-    switch (format.toLowerCase()) {
-      case 'jpg':
-      case 'jpeg':
-        buffer = thumbnail.toJPEG(quality)
-        break
-      case 'webp':
-        buffer = thumbnail.toWebP(quality)
-        break
-      case 'png':
-      default:
-        buffer = thumbnail.toPNG()
-        break
+    // 抓画面（2026-10-13，1.5.0 性能优化）：
+    //   新路径 = 只对目标窗口抓一帧，抓完立刻结束捕获会话；
+    //   失败则回退老路径（整窗口 1080p 缩略图），保证"总能截到图"。
+    let buffer = null
+    let captureMethod = ''
+    let captureError = ''
+    const frame = await windowCapture.captureWindowFrame(targetSource)
+    if (frame && frame.ok && frame.dataUrl) {
+      const image = nativeImage.createFromDataURL(frame.dataUrl)
+      if (!image.isEmpty()) {
+        buffer = encodeImage(image, format, quality)
+        captureMethod = frame.method || 'window-capture'
+      } else {
+        captureError = '抓到的画面解不出来'
+      }
+    } else {
+      captureError = (frame && frame.error) || '抓帧失败'
+    }
+
+    if (!buffer) {
+      console.warn('[截图] 单窗口抓帧失败，回退到老路径（整窗口缩略图）:', captureError)
+      buffer = await captureViaLegacyThumbnail(targetSource, format, quality)
+      if (buffer) captureMethod = 'legacy-thumbnail'
+    }
+
+    if (!buffer) {
+      throw new Error(`截图失败：${captureError || '无法取得画面'}`)
     }
 
     fs.writeFileSync(filepath, buffer)
 
-    console.log('截图已保存:', filepath, '窗口:', targetSource.name)
+    console.log('截图已保存:', filepath, '窗口:', targetSource.name, '抓帧方式:', captureMethod)
 
     // 从 screenshotsDir 中提取文件夹名称
     const gameFolderName = path.basename(screenshotsDir)
@@ -620,6 +688,11 @@ async function getActiveWindow() {
  * @param {Object} appInstance - Electron app 实例。
  */
 function registerIpcHandlers(ipcMain, getMainWindow, appInstance) {
+  // 退出时销毁隐藏的抓帧窗口（它不开工时就一直闲着，占一点点内存）
+  if (appInstance && typeof appInstance.on === 'function') {
+    appInstance.on('will-quit', () => windowCapture.destroyCaptureWindow())
+  }
+
   // 执行截图
   ipcMain.handle('take-screenshot', async (event, customDirectory, format = 'png', quality = 90, runningGamesInfo = {}) => {
     return await takeScreenshot(customDirectory, format, quality, runningGamesInfo, appInstance)

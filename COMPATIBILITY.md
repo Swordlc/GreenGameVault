@@ -39,7 +39,33 @@
 | `games/covers/` | 93 个文件（其中 **89 张**被 `coverPath` 引用，余为历史孤儿），文件名 `<游戏ID>_<时间戳>.png` |
 | `Game/Screenshots/<ID>_<名字>/` | 274 文件 / 309MB，**无封面游戏的回退封面来源** + 游戏内截图 |
 | `Settings/` | `settings.json` / `achievements.json` / `user.json` / `collections.json` |
+| `TagOpsBackup/` | **可安全删除**：左栏标签操作（重命名/合并/移除）的撤销备份，最多留 20 份 JSON。删了只是没法再「撤销上一次标签操作」，不影响任何数据与其它功能 |
 | 其它类型子目录 | 空或极少，**保留不动** |
+
+---
+
+## 一·补、标签批量操作对数据库的写入约定（2026-10-13，v1.5.0）
+
+左栏筛选器（标签 / 开发商 / 作者 / 发行商 / 引擎）支持「重命名 / 合并 / 移除」，它**直接改写资源表**，
+因此必须遵守以下约定（实现见 `electron/services/tag-ops.js`，单测见 `src/tests/tagOps.spec.ts`）：
+
+1. **只动目标字段**：`UPDATE <表> SET jsonData = ?, timestamp = ? WHERE id = ?`，
+   `jsonData` 里除目标字段外的所有键**逐字节保持原样**（已用真库副本逐字段比对验证）；
+   `version` 列**不写**；`timestamp` 刷新为当前时间（用于识别"这条被改过"）。
+2. **只动受影响的记录**：不整页重写。真库副本实测：视频页 6710 条里改 913 条耗时约 124ms，
+   且 `timestamp` 只在被改的那 913 行上变化（其余 5797 行一字节未动）。
+3. **先备份再写**：写库前把「哪些 id、改前是什么、改后是什么」落成 `TagOpsBackup/<时间>-<动作>-<字段>.json`；
+   撤销时按 id 精确还原并**作废**该备份（不可重复撤销）。
+4. **撞名即停**：重命名时若目标名已存在于该字段 → 拒绝执行（`code: duplicate`），
+   引导用「合并标签」；合并允许并入一个已存在的标签名。
+5. **字段类型按记录判断**：数组字段（`games.tags` / `games.developers` / `video.tags` / `video.author`）
+   移除 = 从数组里删掉、合并 = 替换后去重；单值字段（`games.publisher` / `games.engine`）
+   移除 = 清空成 `''`。**按这条记录里该字段实际是什么**来判断，避免历史脏数据被判错。
+6. **预览必须只统计不写**：界面上的"影响面预览"走 `dryRun`，该参数必须一路透传到服务层
+   （漏传会让"预览"变成真改库 —— 这坑 2026-10-13 被界面 E2E 抓到过，已加单测钉死）。
+
+> 「格式筛选」的 `ext`、「丢失的资源」「正在游玩」都是**运行时算出来的**，库里没有这些字段，
+> 因此界面上不给它们编辑入口（`NON_EDITABLE_TAG_FIELDS`）。
 
 ---
 
@@ -154,18 +180,30 @@ MediaCard.vue  coverImagePath()
 
 ## 五、settings 兼容（🚫 不得丢键）
 
-`settings` 表 1 行，`jsonData` 含 **43 个键**：
+`settings` 表 1 行，`jsonData` 含 **47 个键**：
 
 ```
-theme, autoStart, minimizeToTray, disguiseMode, safetyKeyEnabled, safetyKeyUrl, safetyKeyShortcut,
+theme, autoStart, silentStart, minimizeToTray, disguiseMode, safetyKeyEnabled, safetyKeyUrl, safetyKeyShortcut,
 showWindowShortcut, showWindowShortcutEnabled, customAppTitle, customAppSubtitle, backgroundImagePath,
 saveDataLocation, saveDataPath, autoBackupEnabled, autoBackupInterval, maxBackupCount,
 screenshotKey, screenshotLocation, screenshotsPath, screenshotFormat, screenshotQuality,
 screenshotNotification, autoOpenScreenshotFolder, smartWindowDetection,
 videoPlayMode, image, video, audio, game, novel, autoCheckUpdates, sidebarWidth, showWelcome,
 sageMode, safetyKey, safetyAppPath, dataPath, autoBackup, lastView, sortSettings, layoutSettings,
-hasShowUpdateDialog
+hasShowUpdateDialog, videoRoots, videoExtensions, potPlayerPath
 ```
+
+> 核实日期 **2026-10-05**（用只读连接数真库 `settings.jsonData` 的真实键集合：
+> 当时 45 键，本文档此前漏记了 `videoRoots` / `videoExtensions`，已补齐）。
+> 老库缺新键是**正常**的 —— 新增键按「缺省即默认值」处理，不得为此清库。
+
+> `silentStart`（2026-10-05 新增）：开机自启时是否静默启动（只进托盘、不弹窗）。
+> 纯新增键，老库缺它时按 `false` 处理；实现见 `electron/utils/login-item.js`。
+
+> `potPlayerPath`（2026-10-10 新增）：PotPlayer 可执行文件路径，供「视频」页把选中的视频
+> 写进 PotPlayer 播放列表时定位安装目录（`<安装目录>\Playlist\`）。
+> 纯新增键，老库缺它时按 `''` 处理 = 自动探测（注册表卸载项 → 正在运行的进程）；
+> 实现见 `electron/services/potplayer-playlist.js`。**键数 46 → 47**。
 
 其中属于已删功能的键（`videoPlayMode` / `image` / `video` / `audio` / `novel` / `autoCheckUpdates` /
 `sageMode` / `safetyKey*` …）**必须原样保留在库里，不得清除**。

@@ -130,31 +130,43 @@ describe('标签全局筛选（与游戏管理页左侧标签栏同语义）', (
 })
 
 describe('链路 1 · 最常游玩', () => {
-  it('前 3 名是时长/次数绝对值最大的固定席位', () => {
+  it('前 3 名是打开次数最多的固定席位', () => {
     const pick = pickChain(makeLibrary(), 'most-played', { now: NOW, rng: seededRng(1) })
     expect(pick.pinnedIds).toEqual(['g00', 'g01', 'g02'])
     expect(DEFAULT_PINNED_SIZE).toBe(3)
     expect(pick.games).toHaveLength(DEFAULT_ROW_SIZE)
   })
 
-  it('时长 0.7 + 次数 0.3：两项各自按库内最大值归一化后加权', () => {
+  it('只按打开次数打分：时长再长也不加分，零次数的历史数据不参与', () => {
     const games = [
-      makeGame({ id: 'time-heavy', playTime: 100 * 3600, playCount: 0 }),
-      makeGame({ id: 'count-heavy', playTime: 50 * 3600, playCount: 100 })
+      makeGame({ id: 'long-idle', playTime: 500 * 3600, playCount: 2 }),
+      makeGame({ id: 'often', playTime: 1 * 3600, playCount: 100 }),
+      // 「忘关游戏」堆出来的超长时长，不再把别的游戏压扁
+      makeGame({ id: 'forgot-to-close', playTime: 800 * 3600, playCount: 1 })
     ]
     const scored = scoreChain(games, 'most-played', NOW)
     // 打分结果已泛型化为 { item, metric, rank }（为视频推荐复用同一套抽样数学）
     const metricOf = (id: string) => scored.find(entry => entry.item.id === id)!.metric
 
-    // time-heavy：时长拉满(1.0) * 0.7 + 次数为 0 = 0.7
-    expect(metricOf('time-heavy')).toBeCloseTo(0.7, 6)
-    // count-heavy：时长 50% * 0.7 + 次数拉满(1.0) * 0.3 = 0.65
-    expect(metricOf('count-heavy')).toBeCloseTo(0.65, 6)
-    // 时长权重更高 ⇒ 时长拉满者以微弱优势取胜
-    expect(scored[0].item.id).toBe('time-heavy')
+    expect(metricOf('often')).toBeCloseTo(1, 6) // 次数拉满
+    expect(metricOf('long-idle')).toBeCloseTo(0.02, 6) // 2 / 100
+    expect(metricOf('forgot-to-close')).toBeCloseTo(0.01, 6) // 1 / 100
+    // 时长 800 小时的那款排在最后，时长不参与任何加权
+    expect(scored.map(entry => entry.item.id)).toEqual(['often', 'long-idle', 'forgot-to-close'])
   })
 
-  it('从未玩过（playTime = playCount = 0）的游戏永远不会出现', () => {
+  it('只有时长、没有打开次数的历史数据不进「最常游玩」', () => {
+    const games = [
+      makeGame({ id: 'counted', playTime: 2 * 3600, playCount: 5 }),
+      makeGame({ id: 'time-only', playTime: 300 * 3600, playCount: 0, lastPlayed: new Date(NOW).toISOString() })
+    ]
+    const scored = scoreChain(games, 'most-played', NOW)
+    expect(scored.map(entry => entry.item.id)).toEqual(['counted'])
+    // 它仍然能在「最近游玩」里被看到
+    expect(scoreChain(games, 'recent', NOW).map(entry => entry.item.id)).toContain('time-only')
+  })
+
+  it('从未玩过（playCount = 0）的游戏永远不会出现', () => {
     const games = [
       ...makeLibrary(30),
       makeGame({ id: 'never-1', playTime: 0, playCount: 0 }),
@@ -341,7 +353,7 @@ describe('展示文案', () => {
     })
     expect(describeGame('most-played', game, NOW)).toEqual({
       key: 'home.captionMostPlayed',
-      params: { time: '2.0 小时', count: 12 }
+      params: { count: 12 }
     })
     expect(describeGame('recent', game, NOW)).toEqual({ key: 'home.captionDaysAgo', params: { days: 5 } })
     expect(describeGame('up-next', game, NOW)).toEqual({ key: 'home.captionIdle', params: { days: 5 } })

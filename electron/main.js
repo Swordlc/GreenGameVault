@@ -27,15 +27,22 @@ const pathHandlers = require('./ipc/path-handlers')
 const systemHandlers = require('./ipc/system-handlers')
 const settingsHandlers = require('./ipc/settings-handlers')
 const mediaHandlers = require('./ipc/media-handlers')
+const videoToolsHandlers = require('./ipc/video-tools-handlers')
+const tagOpsHandlers = require('./ipc/tag-ops-handlers')
 // 引入工具模块
 const fileUtils = require('./utils/file-utils')
 const pathUtils = require('./utils/path-utils')
 const windowsUtils = require('./utils/windows-utils')
 const constants = require('./utils/constants')
+const loginItem = require('./utils/login-item')
 const sqlite = require('./database/sqlite')
 
 // 判断是否为开发环境
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
+
+// 「开机自启 → 静默启动」是靠自启项里带的 --silent 参数实现的（见 utils/login-item.js）。
+// 用 includes 而不是 argv[1]：打包后是 [exe, --silent]，开发环境是 [electron, ., --silent]。
+const isSilentStart = loginItem.isSilentStartArgv(process.argv)
 
 /**
  * 🩹 日志管道断了不该让应用崩。
@@ -94,13 +101,14 @@ if (disableGpu) {
 // 是否启用最小化到托盘功能
 let minimizeToTrayEnabled = true
 
-function createWindow() {
+function createWindow(silentStart = isSilentStart) {
   // 使用主窗口模块创建窗口
   return mainWindowModule.createMainWindow(
     isDev,
     () => minimizeToTrayEnabled,
     () => systemTray.getTray(),
-    (options) => systemTray.displayBalloon(options)
+    (options) => systemTray.displayBalloon(options),
+    silentStart
   )
 }
 
@@ -122,6 +130,13 @@ if (!gotTheLock) {
   })
   // 监听第二个实例启动的事件
   app.on('second-instance', (event, commandLine, workingDirectory) => {
+    // 开机自启那次（带 --silent）撞上已在运行的实例时，**绝不能**把窗口弹出来：
+    // 那等于"开机自启静默"失效。只有用户手动再点一次图标才唤出窗口。
+    if (loginItem.isSilentStartArgv(commandLine)) {
+      console.log('检测到第二个实例（静默启动参数），保持窗口现状不弹出')
+      return
+    }
+
     // 当用户尝试启动第二个实例时，将焦点移到已运行的应用窗口
     console.log('检测到第二个实例启动，将焦点移到已运行的窗口')
     
@@ -133,7 +148,7 @@ if (!gotTheLock) {
     } else {
       // 如果窗口不存在（可能被销毁了），重新创建
       console.log('主窗口不存在，重新创建窗口')
-      createWindow()
+      createWindow(false)
     }
   })
   
@@ -218,6 +233,13 @@ if (!gotTheLock) {
       const win = mainWindowModule.getMainWindow()
       return win && !win.isDestroyed() ? win.webContents : null
     })
+
+    // 「视频」页多选批量工具：加入 PotPlayer 播放列表（写 .dpl）+ 复制文件到剪贴板。
+    // 两者都**不动主人的视频文件本体**：前者只写播放列表文件，后者只把路径交给 Windows。
+    videoToolsHandlers.registerIpcHandlers(ipcMain)
+
+    // 左栏标签的重命名 / 合并 / 移除：只改资源表里对应字段的值，动手前先写一份可撤销的备份。
+    tagOpsHandlers.registerIpcHandlers(ipcMain)
 
     // 外部播放（PotPlayer）统计：把 PotStats.exe 挂到应用生命周期上。
     // 它走 PotPlayer 官方 IPC 拿**实测**的播放状态（0 停 / 1 暂停 / 2 在播）与播放位置，

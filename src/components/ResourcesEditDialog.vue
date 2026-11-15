@@ -287,10 +287,20 @@
       </div>
       </div>
       <!-- Tag 选择面板：支持多个 FormField_Tags，每个区块对应一个字段 -->
+      <!-- 宽度可拖拽（2026-10-13，1.5.0）：没拖过就按窗口比例给宽度，全屏后不会再显得窄；
+           拖过的宽度记在本地，下次打开沿用。 -->
+      <div
+        v-if="visible"
+        class="tag-panel-resizer"
+        :title="`拖动调整标签面板宽度（当前 ${tagPanelWidth}px，双击恢复默认）`"
+        @mousedown.prevent="startResizeTagPanel"
+        @dblclick="resetTagPanelWidth"
+      ></div>
       <TagSelectionPanel
         :visible="visible"
         :tag-fields="tagFieldsForPanel"
         :available-tags="availableTags"
+        :style="{ width: tagPanelWidth + 'px' }"
         @select-tag="handleSelectTag"
       />
     </div>
@@ -304,6 +314,8 @@ import saveManager from '../utils/SaveManager.ts'
 import notify from '../utils/NotificationService.ts'
 import alertService from '../utils/AlertService.ts'
 import {detectGameEngine} from '../utils/GameEngineDetector.ts'
+// 游戏入库时从「上层目录名」识别游戏名 / 开发商（2026-11-07）
+import {detectGameInfoFromPath} from '../utils/gameInfoAutoDetect.ts'
 // 「使用最新截图作为封面」的判定规则与游戏管理页的批量按钮共用同一套实现
 import {pickNewestScreenshot, toSaveDataRelativePath} from '../utils/ScreenshotCover.ts'
 import {
@@ -327,6 +339,44 @@ import {BaseResources} from '@resources/base/ResourcesDataBase.ts'
 import {FunInput, FunSelect, FunTagInput, FunTextarea} from "../fun-ui";
 import FunOption from "../fun-ui/data-input/Select/FunOption.vue";
 import FunSelectSlot from "../fun-ui/data-input/Select/FunSelectSlot.vue";
+
+/**
+ * 标签面板宽度的本地记忆（2026-10-13，1.5.0）
+ *
+ * 主人的抱怨：「现在窄，尤其是全屏之后还是固定px就更窄了」。
+ * 所以：**没拖过**就按窗口宽度算一个比例值（全屏自动变宽），
+ * **拖过**就记住主人自己定的宽度（存 localStorage，不动设置契约）。
+ */
+const TAG_PANEL_WIDTH_KEY = 'ggv-tag-panel-width';
+const TAG_PANEL_MIN_WIDTH = 240;
+const TAG_PANEL_MAX_RATIO = 0.62; // 最多占窗口宽度的 62%，别把左边表单挤没了
+
+/** 窗口宽度变化时的允许上限 */
+function tagPanelMaxWidth(): number {
+  const viewport = typeof window !== 'undefined' ? window.innerWidth : 1600;
+  return Math.max(TAG_PANEL_MIN_WIDTH, Math.round(viewport * TAG_PANEL_MAX_RATIO));
+}
+
+/** 默认宽度：窗口宽度的 30%，夹在 [240, 上限] 之间 */
+function defaultTagPanelWidth(): number {
+  const viewport = typeof window !== 'undefined' ? window.innerWidth : 1600;
+  return Math.min(Math.max(Math.round(viewport * 0.3), TAG_PANEL_MIN_WIDTH), tagPanelMaxWidth());
+}
+
+function clampTagPanelWidth(width: number): number {
+  return Math.min(Math.max(Math.round(width), TAG_PANEL_MIN_WIDTH), tagPanelMaxWidth());
+}
+
+function readTagPanelWidth(): number {
+  try {
+    const raw = localStorage.getItem(TAG_PANEL_WIDTH_KEY);
+    const saved = raw == null ? NaN : Number(raw);
+    if (Number.isFinite(saved) && saved > 0) return clampTagPanelWidth(saved);
+  } catch (error) {
+    console.warn('[ResourcesEditDialog] 读取标签面板宽度失败:', error);
+  }
+  return defaultTagPanelWidth();
+}
 
 export default {
   name: 'ResourcesEditDialog',
@@ -540,8 +590,17 @@ export default {
     return {
       formData: initFormData(),
       initFormData,
-      tagInputRefs: {} as Record<string, any> // 存储标签输入框的 refs
+      tagInputRefs: {} as Record<string, any>, // 存储标签输入框的 refs
+      // 标签面板宽度（2026-10-13，1.5.0）：没拖过 → 按窗口比例；拖过 → 用记在本地的那份
+      tagPanelWidth: readTagPanelWidth()
     }
+  },
+  mounted() {
+    // 窗口尺寸变化时把标签面板宽度重新夹进合法范围
+    window.addEventListener('resize', this.handleWindowResizeForTagPanel)
+  },
+  beforeUnmount() {
+    window.removeEventListener('resize', this.handleWindowResizeForTagPanel)
   },
   computed: {
     isEditMode() {
@@ -661,6 +720,43 @@ export default {
     }
   },
   methods: {
+    /**
+     * 拖动标签面板左边缘调整宽度（2026-10-13，1.5.0）
+     * 面板在右侧，所以"鼠标往左移"= 面板变宽。
+     * 拖动过程中实时改宽度，松手时才写 localStorage（别在 mousemove 里刷存储）。
+     */
+    startResizeTagPanel(event: MouseEvent) {
+      const startX = event.clientX
+      const startWidth = this.tagPanelWidth
+      const onMove = (moveEvent: MouseEvent) => {
+        this.tagPanelWidth = clampTagPanelWidth(startWidth + (startX - moveEvent.clientX))
+      }
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+        try {
+          localStorage.setItem(TAG_PANEL_WIDTH_KEY, String(this.tagPanelWidth))
+        } catch (error) {
+          console.warn('[ResourcesEditDialog] 保存标签面板宽度失败:', error)
+        }
+      }
+      window.addEventListener('mousemove', onMove)
+      window.addEventListener('mouseup', onUp)
+    },
+    /** 双击拖拽条 → 恢复"跟随窗口比例"的默认宽度 */
+    resetTagPanelWidth() {
+      this.tagPanelWidth = defaultTagPanelWidth()
+      try {
+        localStorage.removeItem(TAG_PANEL_WIDTH_KEY)
+      } catch (error) {
+        console.warn('[ResourcesEditDialog] 清除标签面板宽度失败:', error)
+      }
+    },
+    /** 窗口尺寸变化时重新夹一下，避免宽度吃掉整个对话框 */
+    handleWindowResizeForTagPanel() {
+      const clamped = clampTagPanelWidth(this.tagPanelWidth)
+      if (clamped !== this.tagPanelWidth) this.tagPanelWidth = clamped
+    },
     // 安全地创建资源实例的辅助方法
     createResourceInstance() {
       if (!this.resourceClass || typeof this.resourceClass !== 'function') {
@@ -995,7 +1091,15 @@ export default {
           }
 
           this.formData[key] = filePath
-          
+
+          // 游戏首次入库：从上层目录名识别「游戏名 + 开发商」
+          // 口径见 utils/gameInfoAutoDetect.ts —— 括号内的部分记开发商，去掉括号的部分记游戏名。
+          // 只在添加模式 + 字段为空时填，绝不覆盖主人已经填好的内容。
+          // 仅对「游戏主程序路径」生效，别让选封面时顺手改掉游戏名。
+          if (key === 'resourcePath' || this.isExecutableFileField(field)) {
+            this.applyGameInfoAutoDetect(filePath)
+          }
+
           // 如果是可执行文件字段，自动提取名称（如果名称字段为空）
           if (this.isExecutableFileField(field)) {
             const resourceInstance = this.createResourceInstance()
@@ -1139,6 +1243,34 @@ export default {
       }
 
       return cleanName.charAt(0).toUpperCase() + cleanName.slice(1)
+    },
+    /**
+     * 游戏首次入库：根据文件路径自动填「游戏名 *」和「开发商」。
+     *
+     * 真实目录命名通常是 `[开发商] 游戏名` —— 括号内容是开发商，去掉括号是游戏名。
+     * 只在「添加模式」且字段为空时写，编辑旧记录 / 主人手填过的一律不碰。
+     */
+    applyGameInfoAutoDetect(filePath: string) {
+      if (this.isEditMode || !filePath) return
+      // 只有带 developers 字段的游戏表单才走这条规则，别误伤其他资源类型
+      if (!('developers' in this.formData) || !('name' in this.formData)) return
+      try {
+        const detected = detectGameInfoFromPath(filePath)
+        if (!detected) return
+
+        const currentName = String(this.formData.name || '').trim()
+        if (!currentName && detected.name) {
+          this.formData.name = detected.name
+        }
+
+        const currentDevelopers = Array.isArray(this.formData.developers) ? this.formData.developers : []
+        if (currentDevelopers.length === 0 && detected.developers.length > 0) {
+          this.formData.developers = [...detected.developers]
+        }
+      } catch (error) {
+        // 自动识别失败不该挡住添加流程，保持空字段让主人手填
+        console.warn('[ResourcesEditDialog] 游戏名/开发商自动识别失败:', error)
+      }
     },
     async handleBrowseImage(key: string) {
       const resourceInstance = this.createResourceInstance()
@@ -1984,28 +2116,50 @@ export default {
   font-size: 1rem;
 }
 
-/* Tag 选择面板样式 */
-.tag-panel {
-  background: var(--bg-secondary);
-  border-radius: 12px;
-  width: 300px;
-  max-width: 90vw;
-  max-height: 90vh;
-  overflow-y: auto;
-  box-shadow: 0 20px 40px var(--shadow-medium);
-  transition: all 0.3s ease;
-  flex-shrink: 0;
-  animation: slideInRight 0.3s ease;
+/* 标签面板本体在 TagSelectionPanel 组件里；原本这里还有一份 .tag-panel 的旧样式，
+   但面板早已拆成独立组件（模板里没有任何元素用这个类），属于死代码，2026-10-13 删除。 */
+
+/* 标签面板左侧的拖拽条（调整宽度用） */
+.tag-panel-resizer {
+  width: 8px;
+  flex: 0 0 8px;
+  align-self: stretch;
+  /* 抵掉两侧 20px 的 flex gap，让"表单 | 拖拽条 | 面板"看起来还是一个整体 */
+  margin: 0 -12px;
+  cursor: col-resize;
+  border-radius: 4px;
+  background: transparent;
+  transition: background 0.2s ease;
+  position: relative;
 }
 
-@keyframes slideInRight {
-  from {
-    opacity: 0;
-    transform: translateX(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
+/* 中间那根细线：平时低调，悬停才明显 */
+.tag-panel-resizer::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 2px;
+  height: 48px;
+  border-radius: 2px;
+  background: var(--border-color);
+  transition: background 0.2s ease, height 0.2s ease;
+}
+
+.tag-panel-resizer:hover::after {
+  background: var(--accent-color);
+  height: 96px;
+}
+
+.tag-panel-resizer:hover {
+  background: rgba(var(--accent-color-rgb, 59, 130, 246), 0.08);
+}
+
+/* 窄屏时面板会换成整行显示，这时拖拽条没有意义 */
+@media (max-width: 768px) {
+  .tag-panel-resizer {
+    display: none;
   }
 }
 
@@ -2035,11 +2189,6 @@ export default {
   .modal-content {
     width: 100%;
     margin: 20px;
-  }
-
-  .tag-panel {
-    width: 100%;
-    margin: 0 20px 20px 20px;
   }
 }
 </style>

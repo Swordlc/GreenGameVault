@@ -1255,12 +1255,9 @@ async function minimizeAllGameWindows() {
       try {
         console.log(`尝试最小化游戏窗口 (PID: ${pid}, 游戏: ${gameInfo.gameName || '未知'})`)
 
-        // 首先检查进程是否还存在
-        const checkProcess = await new Promise((resolve) => {
-          exec(`powershell -Command "Get-Process -Id ${pid} -ErrorAction SilentlyContinue"`, (error) => {
-            resolve(!error)
-          })
-        })
+        // 首先检查进程是否还存在（用原生的 process.kill(pid, 0)，不必为此起一个 PowerShell；
+        // 与 5 秒存活巡检用的是同一个 isProcessAlive）
+        const checkProcess = isProcessAlive(pid)
 
         if (!checkProcess) {
           console.log(`⚠️ 进程 ${pid} 已不存在，从列表中移除`)

@@ -261,13 +261,18 @@ export class Video extends BaseResources {
 		editTitle: '编辑视频信息'
 	}
 
-	/** 右键菜单（打开 / 打开所在文件夹 / 抽帧封面 / 删除封面 / 重新关联 / 编辑 / 详情） */
+	/** 右键菜单（打开 / 打开所在文件夹 / 抽帧封面 / 删除封面 / 标签格式刷 / 重新关联 / 编辑 / 详情） */
 	static contextMenuItems = [
 		{ key: 'detail', icon: '👁️', label: '查看详情' },
 		{ key: 'open', icon: '▶️', label: '播放视频' },
 		{ key: 'reveal', icon: '📁', label: '打开所在文件夹' },
 		{ key: 'grab-cover', icon: '🎬', label: '随机抽帧设为封面' },
 		{ key: 'remove-cover', icon: '🧹', label: '删除封面' },
+		// 标签格式刷：取色（复制标签+作者）→ 在 1 张或多张卡上贴色
+		// 合并 = 并集，不动目标原有标签；覆盖 = 整片换掉（带二次确认）
+		{ key: 'copyTagFormat', icon: '🖌️', label: '复制标签格式' },
+		{ key: 'pasteTagFormatMerge', icon: '🖌️', label: '粘贴标签格式（合并）' },
+		{ key: 'pasteTagFormatOverwrite', icon: '🖌️', label: '粘贴标签格式（覆盖）…' },
 		{ key: 'relink', icon: '🔗', label: '重新关联到…' },
 		{ key: 'edit', icon: '✏️', label: '编辑信息' }
 	]

@@ -24,6 +24,16 @@
         @update:model-value="onAutoStartChange"
       />
       
+      <!-- 只在开机自启开着时才出现：这个开关改的是自启项里的 --silent 参数，
+           自启关着的时候它没有任何作用，摆出来只会让人以为坏了。 -->
+      <SettingToggle
+        v-if="settings.autoStart"
+        :title="$t('settings.silentStart.title')"
+        :description="$t('settings.silentStart.description')"
+        :model-value="settings.silentStart"
+        @update:model-value="onSilentStartChange"
+      />
+      
       <SettingToggle
         :title="$t('settings.minimizeToTray.title')"
         :description="$t('settings.minimizeToTray.description')"
@@ -106,6 +116,17 @@
         picker-type="saveData"
         @update:model-value="updateSetting('saveDataPath', $event)"
         @browse="handleSaveDataBrowse"
+      />
+
+      <!-- PotPlayer 路径：「视频」页把选中视频加入播放列表时要用。
+           留空 = 自动探测（注册表卸载项 / 正在运行的进程）；探测不到才需要在这里手填。 -->
+      <SettingFilePicker
+        :title="$t('settings.potPlayer.title')"
+        :description="potPlayerDescription"
+        :model-value="settings.potPlayerPath"
+        :placeholder="$t('settings.potPlayer.placeholder')"
+        picker-type="executable"
+        @update:model-value="updateSetting('potPlayerPath', $event)"
       />
       
       <SettingToggle
@@ -206,10 +227,23 @@ export default {
   data() {
     return {
       currentLanguage: getCurrentLanguage(),
-      languageOptions: availableLanguages
+      languageOptions: availableLanguages,
+      // 自动探测到的 PotPlayer 路径（只用来当占位提示，不写进设置）
+      detectedPotPlayerPath: ''
     }
   },
   computed: {
+    /**
+     * PotPlayer 那一项的描述文案：探测到了就把**完整路径**接在描述里。
+     * 为什么不放输入框的 placeholder：那一格很窄，长路径会被截断成
+     * 「已自动探测到：D:\Personal」——看着像坏了。描述区是整行宽，放得下。
+     */
+    potPlayerDescription() {
+      const base = this.t('settings.potPlayer.description')
+      return this.detectedPotPlayerPath
+        ? `${base}；当前自动探测到：${this.detectedPotPlayerPath}`
+        : base
+    },
     maxBackupCountValue() {
       return this.settings.maxBackupCount ?? 5
     },
@@ -234,6 +268,17 @@ export default {
   },
 
   
+  async mounted() {
+    // 探测一次 PotPlayer（注册表 / 正在运行的进程），只用来当占位提示 —— 不写进设置。
+    // 探测不到也不影响任何事：路径本来就是"可选覆盖"，真正的失败提示在视频页执行时给。
+    try {
+      const result = await window.electronAPI?.potPlayerInfo?.({})
+      if (result?.ok && result.exePath) this.detectedPotPlayerPath = result.exePath
+    } catch (_) {
+      // 忽略：探测只是锦上添花
+    }
+  },
+
   methods: {
     onLanguageChange(lang: string) {
       setLanguage(lang)
@@ -270,9 +315,11 @@ export default {
     
     async onAutoStartChange(newValue: boolean) {
       this.updateSetting('autoStart', newValue)
+      const silent = this.settings.silentStart === true
       try {
         if (window.electronAPI && window.electronAPI.setAutoStart) {
-          const result = await window.electronAPI.setAutoStart(newValue)
+          // 必须把 silent 一起传过去：两个开关共用同一个自启项，不传就等于把参数抹掉
+          const result = await window.electronAPI.setAutoStart(newValue, { silent })
           if (result.success) {
             console.log('开机自启设置更新成功:', result.enabled)
             this.showNotification(
@@ -293,6 +340,41 @@ export default {
         console.error('更新开机自启设置失败:', error)
         alertService.error(this.t('settings.general.autoStartUpdateFailed', { error: error.message }))
         this.updateSetting('autoStart', !newValue)
+      }
+    },
+
+    /**
+     * 「开机时静默启动（只进托盘）」
+     *
+     * 它并不单独存一个注册表项 —— 实现方式是把 `--silent` 参数写进**开机自启那一项**里，
+     * 所以这里必须把 autoStart 一起带上去重写整项，否则改了设置不生效。
+     */
+    async onSilentStartChange(newValue: boolean) {
+      const previous = this.settings.silentStart === true
+      this.updateSetting('silentStart', newValue)
+      try {
+        if (window.electronAPI && window.electronAPI.setAutoStart) {
+          const result = await window.electronAPI.setAutoStart(this.settings.autoStart !== false, { silent: newValue })
+          if (result.success) {
+            console.log('静默启动设置更新成功:', result.silent)
+            this.showNotification(
+              this.t('settings.general.silentStartUpdated'),
+              newValue ? this.t('settings.general.silentStartEnabled') : this.t('settings.general.silentStartDisabled')
+            )
+          } else {
+            console.error('静默启动设置更新失败:', result.error)
+            alertService.error(this.t('settings.general.silentStartFailed', { error: result.error }))
+            this.updateSetting('silentStart', previous)
+          }
+        } else {
+          console.warn('当前环境不支持开机自启功能')
+          alertService.warning(this.t('settings.general.autoStartNotSupported'))
+          this.updateSetting('silentStart', previous)
+        }
+      } catch (error: any) {
+        console.error('更新静默启动设置失败:', error)
+        alertService.error(this.t('settings.general.silentStartFailed', { error: error.message }))
+        this.updateSetting('silentStart', previous)
       }
     },
     

@@ -17,6 +17,7 @@
  * 
  * 导出的函数：
  * - getActiveWindowPID()         获取当前活跃窗口的进程 ID
+ * - getForegroundWindowInfo()    一次拿到前台窗口的 PID + 标题（截图路径用，省一次 PowerShell）
  * - getWindowTitleByPID()        通过 PID 获取进程的主窗口标题
  * - getAllWindowTitlesByPID()    通过 PID 获取进程的所有窗口标题
  * - getParentProcessID()         获取进程的父进程 ID
@@ -163,6 +164,83 @@ if ($process -and $process.MainWindowTitle) {
       reject(writeError)
     }
   })
+}
+
+/**
+ * 一次调用同时取「前台窗口的 PID」与「窗口标题」（2026-10-13，性能优化）
+ *
+ * 背景：截图路径以前是**两次** PowerShell 调用（getActiveWindowPID + getWindowTitleByPID），
+ * 而 getActiveWindowPID 里那段 `Add-Type` 每次都要现场编译一遍 C#，
+ * 单次 0.5~1.5 秒的 CPU 编译开销 × 每次截图 —— 主人报告"抽帧截图后游戏掉帧"时，
+ * 这是除 GPU 捕获之外的第二笔账。
+ *
+ * 现在合并成一次调用、一次 Add-Type，顺便用 Win32 的 GetWindowTextW 直接取标题，
+ * 不再依赖 `Get-Process` 的 MainWindowTitle（少一层进程查询）。
+ *
+ * @returns {Promise<{pid: number|null, title: string|null}>} 拿不到就返回 null 字段
+ */
+async function getForegroundWindowInfo() {
+  if (!isWindows()) return { pid: null, title: null }
+
+  // 用单元分隔符（\u001f）分隔两个字段：窗口标题里不会出现这个字符，比 tab / | 安全
+  const psScript = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public class GgvWin32 {
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetWindowTextW(IntPtr hWnd, StringBuilder text, int count);
+    public static uint ForegroundPid() {
+        uint processId;
+        GetWindowThreadProcessId(GetForegroundWindow(), out processId);
+        return processId;
+    }
+    public static string ForegroundTitle() {
+        StringBuilder sb = new StringBuilder(1024);
+        GetWindowTextW(GetForegroundWindow(), sb, sb.Capacity);
+        return sb.ToString();
+    }
+}
+"@
+$fgPid = [GgvWin32]::ForegroundPid()
+$fgTitle = [GgvWin32]::ForegroundTitle()
+[Console]::Out.WriteLine("$fgPid" + [char]31 + "$fgTitle")`
+
+  const tempScriptPath = path.join(os.tmpdir(), `get_foreground_info_${Date.now()}.ps1`)
+  try {
+    fs.writeFileSync(tempScriptPath, psScript, 'utf8')
+    const stdout = await new Promise((resolve, reject) => {
+      exec(`chcp 65001 >nul & powershell -NoProfile -ExecutionPolicy Bypass -File "${tempScriptPath}"`, { encoding: 'utf8', maxBuffer: 1024 * 1024 }, (error, out) => {
+        if (error) reject(error)
+        else resolve(out)
+      })
+    })
+    const line = String(stdout || '').replace(/\r/g, '').split('\n').map(text => text.trim()).filter(text => text !== '')[0] || ''
+    if (!line) return { pid: null, title: null }
+    const separatorIndex = line.indexOf('\u001f')
+    const pidText = separatorIndex >= 0 ? line.slice(0, separatorIndex) : line
+    const titleText = separatorIndex >= 0 ? line.slice(separatorIndex + 1) : ''
+    const pid = parseInt(pidText, 10)
+    return {
+      pid: Number.isNaN(pid) ? null : pid,
+      title: titleText ? titleText : null
+    }
+  } catch (error) {
+    console.warn('获取前台窗口信息失败:', error.message)
+    return { pid: null, title: null }
+  } finally {
+    try {
+      if (fs.existsSync(tempScriptPath)) fs.unlinkSync(tempScriptPath)
+    } catch (cleanupError) {
+      // 忽略清理错误
+    }
+  }
 }
 
 /**
@@ -464,6 +542,7 @@ async function getDiskType(filePath) {
 module.exports = {
   isWindows,
   getActiveWindowPID,
+  getForegroundWindowInfo,
   getWindowTitleByPID,
   getAllWindowTitlesByPID,
   getParentProcessID,

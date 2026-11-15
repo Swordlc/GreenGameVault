@@ -82,6 +82,9 @@ export default defineComponent({
       window.addEventListener('filter-exclude', handleGlobalFilterEvent);
       window.addEventListener('filter-clear', handleGlobalFilterEvent);
       window.addEventListener('filter-request-update', handleFilterUpdateRequest);
+      // 左栏标签编辑 / 撤销标签操作（2026-10-13，1.5.0）
+      window.addEventListener('tag-edit', handleGlobalFilterEvent);
+      window.addEventListener('tag-op-undo', handleGlobalFilterEvent);
     });
 
     onUnmounted(() => {
@@ -89,6 +92,8 @@ export default defineComponent({
       window.removeEventListener('filter-exclude', handleGlobalFilterEvent);
       window.removeEventListener('filter-clear', handleGlobalFilterEvent);
       window.removeEventListener('filter-request-update', handleFilterUpdateRequest);
+      window.removeEventListener('tag-edit', handleGlobalFilterEvent);
+      window.removeEventListener('tag-op-undo', handleGlobalFilterEvent);
     });
 
     // 使用 expose API 显式暴露方法给父组件

@@ -101,12 +101,12 @@ describe('主页三条抓阄链路', () => {
     expect(rows[1].find('.section-title').text()).toContain('最近游玩')
     expect(rows[2].find('.section-title').text()).toContain('接下来游玩')
 
-    expect(rows[0].find('.chain-card .resource-status').text()).toMatch(/小时 · \d+ 次/)
+    expect(rows[0].find('.chain-card .resource-status').text()).toMatch(/打开 \d+ 次/)
     expect(rows[1].find('.chain-card .resource-status').text()).toContain('天前玩过')
     expect(rows[2].find('.chain-card .resource-status').text()).toContain('天没碰了')
 
     // 三条链路的固定席位口径不同：本库里最久没碰的恰恰是序号最大的那一款
-    expect(cardNames(rows[0])[0]).toBe('游戏00') // 时长 / 次数最强
+    expect(cardNames(rows[0])[0]).toBe('游戏00') // 打开次数最多（时长不参与）
     expect(cardNames(rows[1])[0]).toBe('游戏00') // 最后游玩最近
     expect(cardNames(rows[2])[0]).toBe('游戏39') // 空置 40 天，最久没碰
     expect(cardNames(rows[2])).not.toEqual(cardNames(rows[0]))

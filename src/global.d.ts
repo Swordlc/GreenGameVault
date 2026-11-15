@@ -114,9 +114,9 @@ declare global {
       getAvailableWindows: () => Promise<{ success: boolean; windows?: Array<{ id: string; name: string; thumbnail: string }>; error?: string }>
       getActiveWindow: () => Promise<{ success: boolean; window?: { id: string; name: string; thumbnail: string }; error?: string }>
       
-      // 开机自启
-      setAutoStart: (enabled: boolean) => Promise<{ success: boolean; enabled?: boolean; error?: string }>
-      getAutoStart: () => Promise<{ success: boolean; enabled?: boolean; error?: string }>
+      // 开机自启（silent：开机时静默启动 —— 只进托盘、不弹窗口）
+      setAutoStart: (enabled: boolean, options?: { silent?: boolean }) => Promise<{ success: boolean; enabled?: boolean; silent?: boolean; error?: string }>
+      getAutoStart: () => Promise<{ success: boolean; enabled?: boolean; silent?: boolean; error?: string }>
       
       // 系统托盘
       createTray: () => Promise<{ success: boolean; message?: string; error?: string }>
@@ -162,6 +162,46 @@ declare global {
       scraperDbReadExternal: (dbPath: string) => Promise<{ ok: boolean; data?: Array<{ _id: number; sourceTable: string; updateTime: string; author: string | null; jsonData: string }>; message?: string }>
       scraperDbMerge: (overwrites: Array<{ localId: number; sourceTable: string; jsonData: string; updateTime: string; author: string | null }>, adds: Array<{ sourceTable: string; jsonData: string; updateTime: string; author: string | null }>) => Promise<{ ok: boolean; overwritten?: number; added?: number; message?: string }>
       
+      // 视频页多选批量工具（2026-10-10）：加入 PotPlayer 播放列表 / 复制文件到剪贴板
+      potPlayerInfo: (payload?: { exePath?: string }) => Promise<{
+        ok: boolean; source?: string; message?: string; exePath?: string; installDir?: string;
+        playlistDir?: string; defaultPlaylistPath?: string; defaultPlaylistExists?: boolean;
+        running?: boolean; runningCount?: number
+      }>
+      potPlayerWritePlaylist: (payload: {
+        files: string[]; tagNames?: string[]; fallbackName?: string;
+        exePath?: string; open?: boolean
+      }) => Promise<{
+        ok: boolean; path?: string; fileName?: string; count?: number; missingCount?: number;
+        runningCount?: number; backupPath?: string | null; opened?: boolean; openMessage?: string; message?: string
+      }>
+      clipboardCopyFiles: (payload: { files: string[]; verify?: boolean }) => Promise<{
+        ok: boolean; count: number; missing: string[]; verified?: boolean; message?: string
+      }>
+      clipboardReadFiles: () => Promise<{ ok: boolean; files: string[]; message?: string }>
+
+      // 左栏标签编辑（2026-10-13，1.5.0）：重命名 / 合并 / 移除 → 改全库同类型记录的该字段
+      tagOpApply: (payload: {
+        resourceType: string; field: string; action: 'rename' | 'merge' | 'remove';
+        from: string[]; to?: string | null; allowExisting?: boolean; dryRun?: boolean
+      }) => Promise<{
+        ok: boolean; code?: string; message?: string; affected?: number; scanned?: number;
+        skipped?: number; dryRun?: boolean; backupPath?: string | null;
+        changes?: Array<{ id: string; before: any; after: any }>
+      }>
+      tagOpUndo: (payload?: { resourceType?: string; backupPath?: string | null }) => Promise<{
+        ok: boolean; code?: string; message?: string; restored?: number; missing?: number;
+        mismatched?: number; action?: string; field?: string;
+        changes?: Array<{ id: string; before: any; after: any }>
+      }>
+      tagOpLastBackup: (payload?: { resourceType?: string }) => Promise<{
+        ok: boolean; backup: {
+          path: string; fileName?: string; createdAt?: string | null;
+          action: 'rename' | 'merge' | 'remove'; field: string; from: string[];
+          to: string | null; affected: number; tableName?: string
+        } | null
+      }>
+
       // 其他方法
       [key: string]: any
     }

@@ -17,7 +17,7 @@
   "rerollTitle": "只重刷这一行的随机位（前 3 名固定不变）",
 
   "chainMostPlayed": "最常游玩",
-  "chainMostPlayedHint": "按游戏时长 0.7 + 启动次数 0.3 排；前 3 名固定，其余按权重抽签",
+  "chainMostPlayedHint": "按打开次数排（不计游玩时长）；前 3 名固定，其余按权重抽签",
   "chainRecent": "最近游玩",
   "chainRecentHint": "按最后游玩时间排；前 3 名固定，其余按权重抽签",
   "chainUpNext": "接下来游玩",
@@ -27,7 +27,7 @@
   "rowEmptyRecent": "还没有游玩记录",
   "rowEmptyUpNext": "暂时没有可以推荐的游戏",
 
-  "captionMostPlayed": "{time} · {count} 次",
+  "captionMostPlayed": "打开 {count} 次",
   "captionRecent": "最后游玩 {time}",
   "captionNever": "从未游玩",
   "captionToday": "今天玩过",

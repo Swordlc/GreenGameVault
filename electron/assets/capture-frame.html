@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>GGV 抓帧</title>
+  <style>
+    html, body { margin: 0; padding: 0; background: #000; overflow: hidden; }
+    video, canvas { display: none; }
+  </style>
+</head>
+<body>
+  <!--
+    隐藏抓帧页（2026-10-13，1.5.0 性能优化）
+
+    为什么不继续用 desktopCapturer 的 thumbnail：
+      老代码是 `getSources({ types:['window'], thumbnailSize:{1920,1080} })`，
+      也就是**系统里每一个窗口都抓一张 1920×1080 缩略图**（一张约 8.3MB，
+      开 20 个窗口就是每次约 160MB 的抓取量），而主人只想要"当前那个游戏窗口"一张图。
+     Windows 上这条路径走 WGC（Windows Graphics Capture），每次都会给每个窗口建捕获会话/帧池；
+      主人在原神里实测：抽帧约 30 次后每截一次掉一帧，50 次左右掉到 20 多帧 ——
+      典型的"每次都在泄漏一点、且永不归还"，与这里的抓取量完全对得上。
+
+    现在的做法：**只对目标窗口建一次捕获，抓一帧，立刻 stop()**。
+    枚举窗口时用 thumbnailSize 0（Electron 会跳过缩略图生成），所以不再有 N 张 1080p 位图。
+
+    这个页面由主进程用 file:// 加载（file 协议是"可信来源"，mediaDevices 才可用）。
+  -->
+  <video id="ggv-capture-video" muted playsinline></video>
+  <canvas id="ggv-capture-canvas"></canvas>
+  <script>
+    /**
+     * 抓目标窗口的一帧。
+     * @param {string} sourceId - desktopCapturer 给的源 id（形如 window:123456:0）
+     * @returns {Promise<{ok: boolean, dataUrl?: string, width?: number, height?: number,
+     *                    black?: boolean, method?: string, error?: string}>}
+     */
+    window.__ggvCapture = async function (sourceId) {
+      const video = document.getElementById('ggv-capture-video')
+      const canvas = document.getElementById('ggv-capture-canvas')
+      const attempts = []
+      let stream = null
+
+      // 方式 1：Electron 传统 chromeMediaSource（不需要用户手势，最稳）
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            mandatory: {
+              chromeMediaSource: 'desktop',
+              chromeMediaSourceId: sourceId,
+              maxWidth: 3840,
+              maxHeight: 2160,
+              maxFrameRate: 30
+            }
+          }
+        })
+      } catch (error) {
+        attempts.push('legacy:' + ((error && error.name) || String(error)))
+        // 方式 2：getDisplayMedia（具体抓哪个源由主进程的 setDisplayMediaRequestHandler 决定）
+        try {
+          stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false })
+        } catch (error2) {
+          attempts.push('displayMedia:' + ((error2 && error2.name) || String(error2)))
+          return { ok: false, error: attempts.join(' | ') }
+        }
+      }
+
+      try {
+        video.srcObject = stream
+        video.muted = true
+        try { await video.play() } catch (playError) { /* 隐藏窗口里 play 可能被拒，下面靠 videoWidth 判断 */ }
+
+        const started = Date.now()
+        while (video.videoWidth === 0 && Date.now() - started < 2500) {
+          await new Promise(resolve => setTimeout(resolve, 50))
+        }
+        if (video.videoWidth === 0) {
+          return { ok: false, error: 'no-frame（拿到流但一直没有画面）' }
+        }
+
+        // 首帧有时还是全黑，等一小会儿再画
+        await new Promise(resolve => setTimeout(resolve, 130))
+
+        canvas.width = video.videoWidth
+        canvas.height = video.videoHeight
+        const context = canvas.getContext('2d')
+        context.drawImage(video, 0, 0, canvas.width, canvas.height)
+
+        // 全黑检测：整幅图稀疏采样（步长取质数，避免只看到某个角落）
+        let black = false
+        try {
+          const frame = context.getImageData(0, 0, canvas.width, canvas.height).data
+          let bright = 0
+          for (let i = 0; i < frame.length; i += 4 * 97) {
+            if (frame[i] > 8 || frame[i + 1] > 8 || frame[i + 2] > 8) {
+              bright++
+              if (bright > 5) break
+            }
+          }
+          black = bright <= 5
+        } catch (sampleError) {
+          // 采样失败就不下"全黑"的结论，交给上层按正常图处理
+          black = false
+        }
+
+        return {
+          ok: true,
+          dataUrl: canvas.toDataURL('image/png'),
+          width: canvas.width,
+          height: canvas.height,
+          black: black,
+          method: attempts.length ? 'displayMedia' : 'legacy'
+        }
+      } finally {
+        // 关键：立刻结束捕获会话（这是本次性能修复的重点）
+        try { stream.getTracks().forEach(track => track.stop()) } catch (stopError) { /* 忽略 */ }
+        try { video.srcObject = null } catch (clearError) { /* 忽略 */ }
+      }
+    }
+  </script>
+</body>
+</html>

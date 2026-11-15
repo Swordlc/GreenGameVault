@@ -134,9 +134,13 @@
             <FilterSidebar 
               :filters="currentFilterData.filters" 
               :isLoading="isFilterSidebarLoading"
+              :undoInfo="currentFilterData.tagOpsUndo || null"
+              :undoing="!!currentFilterData.tagOpsRunning"
               @filter-select="onFilterSelect"
               @filter-exclude="onFilterExclude" 
               @filter-clear="onFilterClear" 
+              @tag-edit="onTagEdit"
+              @tag-op-undo="onTagOpUndo"
             />
           </div>
 
@@ -556,6 +560,19 @@ export default {
       window.dispatchEvent(new CustomEvent('filter-clear', {
         detail: filterKey
       }))
+    },
+    /**
+     * 左栏标签的「编辑」图标（重命名 / 合并 / 移除）
+     * 与上面几个筛选事件同一套路：转成全局事件，由当前页视图（ResourceView → GenericResourceView）处理 ——
+     * 只有它知道当前页的资源类型与内存数据，改了库之后也要它来同步界面。
+     */
+    onTagEdit(detail) {
+      console.log('App.vue onTagEdit:', detail?.filterKey, detail?.itemName)
+      window.dispatchEvent(new CustomEvent('tag-edit', { detail }))
+    },
+    /** 底部「撤销上一次标签操作」 */
+    onTagOpUndo() {
+      window.dispatchEvent(new CustomEvent('tag-op-undo', { detail: {} }))
     },
     // 全局游戏运行状态管理方法
     addRunningGame(gameInfo) {

@@ -8,6 +8,7 @@ import type { SortConfig } from '../utils/sortBy'
 import { getFilterFunctions } from '../configs/filters/filterLibrary.ts'
 import { pageConfigLoader } from '../configs/pages/PageConfigLoader.ts'
 import { collectSearchTexts, matchesFuzzy } from '../utils/fuzzySearch'
+import { resolveTagFieldMeta } from '../utils/tagOps'
 
 // 需要按「时间」比较大小的字段（lastOpened 是视频页的派生 getter）
 const DATE_FIELDS = ['addedDate', 'lastRead', 'lastPlayed', 'lastViewed', 'lastOpened']
@@ -427,18 +428,27 @@ export function useResourceFilter<T = any>(
 
   /**
    * 获取筛选器数据（用于 FilterSidebar）
+   *
+   * 除原有的 key/title/items/selected/excluded 外，这里还会带上**标签编辑**需要的信息
+   * （`editable` / `field` / `resourceType` / `isArray`）—— 左栏靠它决定要不要显示悬停编辑图标，
+   * 以及点下去时该改哪个字段。算出来的字段（如视频页的 ext）不值得编辑，标记为 false。
    */
   function getFilterData() {
     return {
       filters: filterConfigs.map(config => {
         const state = filterStates[config.key]
+        const tagField = resolveTagFieldMeta(config)
         // 确保返回的是普通数组，而不是 Proxy（使用展开运算符创建新数组）
         return {
           key: config.key,
           title: config.title,
           items: state ? [...state.items.value] : [],
           selected: state ? [...state.selected.value] : [],
-          excluded: state ? [...state.excluded.value] : []
+          excluded: state ? [...state.excluded.value] : [],
+          editable: tagField.editable,
+          field: tagField.field,
+          resourceType: tagField.resourceType,
+          isArray: tagField.isArray
         }
       })
     }

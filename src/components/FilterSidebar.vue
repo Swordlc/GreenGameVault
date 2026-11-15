@@ -45,6 +45,13 @@
           @click="selectFilter(filter.key, item.name)"
           @contextmenu.prevent="excludeFilter(filter.key, item.name)"
         >
+          <!-- 悬停才出现的编辑入口：重命名 / 合并 / 移除（只有真实入库的字段才有） -->
+          <button
+            v-if="filter.editable"
+            class="filter-edit-btn"
+            :title="`编辑标签「${item.name}」：重命名 / 合并 / 移除`"
+            @click.stop="openTagEdit(filter, item, $event)"
+          >✏️</button>
           <span v-if="filter.selected && filter.selected.includes(item.name)" class="include-indicator">✓</span>
           <span v-if="filter.excluded && filter.excluded.includes(item.name)" class="exclude-indicator">∅</span>
           <span class="filter-name">{{ getDisplayName(item.name) }}</span>
@@ -64,6 +71,13 @@
       <div class="empty-icon">🔍</div>
       <p class="empty-text">暂无筛选器数据</p>
     </div>
+
+    <!-- 撤销上一次标签操作（重命名/合并/移除都能撤，备份存在才有这一条） -->
+    <div v-if="undoLabel" class="tag-undo-bar">
+      <button class="btn-tag-undo" :disabled="undoing" @click="$emit('tag-op-undo')">
+        ↩ {{ undoLabel }}
+      </button>
+    </div>
   </div>
 </template>
 
@@ -72,6 +86,7 @@ import disguiseManager from '../utils/DisguiseManager'
 import { isDisguiseModeEnabled } from '../utils/disguiseMode'
 import FunLoading from '../fun-ui/feedback/Loading/FunLoading.vue'
 import { matchesFuzzy } from '../utils/fuzzySearch'
+import { formatUndoLabel } from '../utils/tagOps'
 
 /** 条目超过这个数量才给搜索框（少量条目没必要占地方） */
 const SEARCH_BOX_THRESHOLD = 8
@@ -99,9 +114,30 @@ export default {
     isLoading: {
       type: Boolean,
       default: false
+    },
+    /** 最近一次可撤销的标签操作（null = 没得撤，这时不显示底部按钮） */
+    undoInfo: {
+      type: Object,
+      default: null
+    },
+    /** 撤销请求进行中（防连点） */
+    undoing: {
+      type: Boolean,
+      default: false
     }
   },
-  emits: ['filter-select', 'filter-exclude', 'filter-clear'],
+  emits: ['filter-select', 'filter-exclude', 'filter-clear', 'tag-edit', 'tag-op-undo'],
+  computed: {
+    /** 底部「撤销」按钮的文案；没有可撤销的操作时返回 null */
+    undoLabel() {
+      try {
+        return formatUndoLabel(this.undoInfo)
+      } catch (error) {
+        console.warn('[FilterSidebar] 生成撤销文案失败:', error)
+        return null
+      }
+    }
+  },
   data() {
     return {
       disguiseModeState: false, // 伪装模式状态
@@ -141,6 +177,25 @@ export default {
     },
     clearFilter(filterKey) {
       this.$emit('filter-clear', filterKey)
+    },
+    /**
+     * 点标签上的编辑图标：把「哪个分区、哪个标签」交给页面处理
+     * （具体的重命名/合并/移除弹窗与写库都在页面视图里，因为只有它知道当前页的资源类型）
+     */
+    openTagEdit(filter, item, event) {
+      console.log('[FilterSidebar] 请求编辑标签:', filter?.key, filter?.field, item?.name)
+      this.$emit('tag-edit', {
+        filterKey: filter?.key,
+        field: filter?.field || null,
+        resourceType: filter?.resourceType || null,
+        isArray: filter?.isArray === true,
+        filterTitle: filter?.title || '',
+        itemName: item?.name,
+        items: Array.isArray(filter?.items) ? filter.items : [],
+        // 三个动作的小浮层要贴着鼠标出现（侧栏有滚动裁剪，浮层用 fixed 定位）
+        x: event ? event.clientX : 0,
+        y: event ? event.clientY : 0
+      })
     },
     /**
      * 获取显示名称（支持伪装模式）
@@ -357,6 +412,73 @@ export default {
   display: flex;
   justify-content: flex-start;
   align-items: center;
+  position: relative; /* 编辑图标绝对定位用，避免挤动既有排版 */
+}
+
+/* 悬停才浮现的编辑图标（放在最左侧，不占位、不挤压文字） */
+.filter-edit-btn {
+  position: absolute;
+  left: 1px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  line-height: 1;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+.filter-item:hover .filter-edit-btn {
+  opacity: 0.75;
+}
+
+.filter-edit-btn:hover {
+  opacity: 1;
+  background: rgba(127, 127, 127, 0.25);
+}
+
+/* 底部「撤销上一次标签操作」 */
+.tag-undo-bar {
+  margin-top: auto;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  position: sticky;
+  bottom: 0;
+}
+
+.btn-tag-undo {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 0.78rem;
+  line-height: 1.3;
+  text-align: left;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-tag-undo:hover:not(:disabled) {
+  border-color: var(--accent-color);
+  background: var(--bg-primary);
+}
+
+.btn-tag-undo:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .include-indicator {

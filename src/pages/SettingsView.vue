@@ -102,6 +102,7 @@ export default {
       settings: {
         theme: 'auto',
         autoStart: false,
+        silentStart: false,
         minimizeToTray: true,
         disguiseMode: false,
         safetyKeyEnabled: false,
@@ -117,6 +118,8 @@ export default {
         // 存档设置
         saveDataLocation: 'default',
         saveDataPath: '',
+        // PotPlayer 路径（留空自动探测）
+        potPlayerPath: '',
         autoBackupEnabled: false, // 是否开启自动备份
         autoBackupInterval: DEFAULT_AUTO_BACKUP_INTERVAL, // 自动备份时间间隔（分钟）
         maxBackupCount: DEFAULT_MAX_BACKUP_COUNT, // 保留的备份数量
@@ -340,6 +343,7 @@ export default {
         this.settings = {
             theme: 'auto',
             autoStart: false,
+            silentStart: false,
             minimizeToTray: true,
             disguiseMode: false,
             safetyKeyEnabled: false,
@@ -350,6 +354,8 @@ export default {
             // 存档设置
             saveDataLocation: 'default',
             saveDataPath: '',
+            // PotPlayer 路径（留空自动探测）
+            potPlayerPath: '',
             autoBackupEnabled: false,
             autoBackupInterval: DEFAULT_AUTO_BACKUP_INTERVAL,
             maxBackupCount: DEFAULT_MAX_BACKUP_COUNT,
@@ -762,12 +768,14 @@ export default {
             }
             
             // 获取当前开机自启状态（仅在设置文件中没有值时获取）
+            let systemAutoStartSilent: boolean | undefined
             if (this.settings.autoStart === undefined || this.settings.autoStart === null) {
               try {
                 if (window.electronAPI && window.electronAPI.getAutoStart) {
                   const result = await window.electronAPI.getAutoStart()
                   if (result.success) {
                     this.settings.autoStart = result.enabled
+                    systemAutoStartSilent = result.silent
                     console.log('从系统获取开机自启状态:', result.enabled)
                   }
                 }
@@ -778,6 +786,23 @@ export default {
               }
             } else {
               console.log('使用设置文件中的开机自启状态:', this.settings.autoStart)
+            }
+
+            // 「开机时静默启动」：设置文件里没有值时，按**自启项里真实生效的参数**回填，
+            // 否则界面显示的会和注册表里实际的不一致（改过开关却没重写自启项的那种情况）。
+            if (this.settings.silentStart === undefined || this.settings.silentStart === null) {
+              if (systemAutoStartSilent === undefined) {
+                try {
+                  if (window.electronAPI && window.electronAPI.getAutoStart) {
+                    const result = await window.electronAPI.getAutoStart()
+                    if (result.success) systemAutoStartSilent = result.silent
+                  }
+                } catch (error) {
+                  console.error('获取静默启动状态失败:', error)
+                }
+              }
+              this.settings.silentStart = systemAutoStartSilent === true
+              console.log('静默启动状态:', this.settings.silentStart)
             }
             
             // 获取当前最小化到托盘状态（仅在设置文件中没有值时获取）

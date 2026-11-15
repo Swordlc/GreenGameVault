@@ -36,6 +36,15 @@
     "title": "开机自启",
     "description": "应用启动时自动运行"
   },
+  "silentStart": {
+    "title": "开机时静默启动（只进托盘）",
+    "description": "开机自启那一次不弹出主窗口，只在系统托盘里待命，点托盘图标才唤出窗口"
+  },
+  "potPlayer": {
+    "title": "PotPlayer 路径",
+    "description": "「视频」页把选中的视频加入 PotPlayer 播放列表时要用。留空自动探测（注册表 / 正在运行的进程）",
+    "placeholder": "留空自动探测；也可手填 PotPlayerMini64.exe 的完整路径"
+  },
   "minimizeToTray": {
     "title": "关闭窗口时最小化到系统托盘",
     "description": "点击关闭按钮时最小化到系统托盘，普通最小化仍会显示在任务栏"
@@ -119,6 +128,10 @@
     "autoStartFailed": "开机自启设置失败: {error}",
     "autoStartNotSupported": "当前环境不支持开机自启功能",
     "autoStartUpdateFailed": "更新开机自启设置失败: {error}",
+    "silentStartUpdated": "静默启动设置已更新",
+    "silentStartEnabled": "开机后将静默启动，只显示托盘图标（不弹窗口）",
+    "silentStartDisabled": "开机后将正常弹出主窗口",
+    "silentStartFailed": "静默启动设置失败: {error}",
     "minimizeToTrayUpdated": "关闭窗口行为设置已更新",
     "minimizeToTrayEnabled": "关闭窗口时将最小化到系统托盘，普通最小化仍显示在任务栏",
     "minimizeToTrayDisabled": "关闭窗口时将直接退出应用",

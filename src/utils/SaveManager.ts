@@ -68,6 +68,8 @@ class SaveManager {
         theme: 'auto',
         sidebarWidth: 280,
         autoStart: false,
+        // 开机自启时是否静默启动（只进托盘、不弹窗）。只增键，绝不动老键 —— 见 COMPATIBILITY.md 第五节
+        silentStart: false,
         minimizeToTray: true,
         disguiseMode: false,
         showWelcome: true,
@@ -90,6 +92,10 @@ class SaveManager {
         videoRoots: [],
         // 「视频」页识别的扩展名；空数组 = 用内置默认清单
         videoExtensions: [],
+        // PotPlayer 可执行文件路径（视频页「加入播放列表」用）。
+        // 留空 = 自动探测（注册表卸载项 → 正在运行的进程）；探测不到时主人在设置里手填。
+        // 只增键，绝不动老键 —— 见 COMPATIBILITY.md 第五节
+        potPlayerPath: '',
         // ⚠️ 已废弃（1.4.3 起）：启动固定进主页，不再恢复「上次访问的页面」。
         // 保留键位只为不动老配置（COMPATIBILITY.md 第五节：只增键，绝不动老键），
         // 现在没有任何代码读它。

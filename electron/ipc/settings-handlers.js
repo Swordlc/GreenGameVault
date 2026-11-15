@@ -14,12 +14,13 @@
  * IPC 处理器:
  * - `get-save-data-directory`: 获取存档目录路径。
  * - `set-save-data-directory`: 设置存档目录（包含目录复制逻辑）。
- * - `set-auto-start`: 设置开机自启。
- * - `get-auto-start`: 获取开机自启状态。
+ * - `set-auto-start`: 设置开机自启（第二参数 `{silent}` 决定开机时是否静默启动）。
+ * - `get-auto-start`: 获取开机自启状态（返回 `{enabled, silent}`）。
  */
 
 const fs = require('fs')
 const path = require('path')
+const loginItem = require('../utils/login-item')
 
 /**
  * 复制存档数据到新目录。
@@ -247,40 +248,32 @@ function registerIpcHandlers(ipcMain, app, dialog, getMainWindow) {
     }
   })
 
-  // 设置开机自启
-  ipcMain.handle('set-auto-start', async (event, enabled) => {
+  // 设置开机自启（顺带决定「开机时是否静默启动」）
+  //
+  // 两个开关共用同一个注册表项：静默启动就是靠自启项里带 --silent 参数实现的，
+  // 所以这里必须**同时**拿到 enabled 与 silent，改任意一个都要把整项重写一遍。
+  ipcMain.handle('set-auto-start', async (event, enabled, options = {}) => {
     try {
-      console.log('设置开机自启:', enabled)
+      const wantEnabled = !!enabled
+      const silent = options && options.silent === true
+      console.log('设置开机自启:', { enabled: wantEnabled, silent })
 
-      if (enabled) {
-        // 启用开机自启
-        app.setLoginItemSettings({
-          openAtLogin: true,
-          openAsHidden: false
-        })
-        console.log('✅ 开机自启已启用')
-      } else {
-        // 禁用开机自启
-        app.setLoginItemSettings({
-          openAtLogin: false
-        })
-        console.log('✅ 开机自启已禁用')
-      }
+      loginItem.setAutoStart(app, wantEnabled, silent)
+      console.log(wantEnabled ? '✅ 开机自启已启用' : '✅ 开机自启已禁用')
 
-      return { success: true }
+      return { success: true, enabled: wantEnabled, silent }
     } catch (error) {
       console.error('设置开机自启失败:', error)
       return { success: false, error: error.message }
     }
   })
 
-  // 获取开机自启状态
+  // 获取开机自启状态（包含是否静默启动）
   ipcMain.handle('get-auto-start', async () => {
     try {
-      const loginItemSettings = app.getLoginItemSettings()
-      const enabled = loginItemSettings.openAtLogin
-      console.log('当前开机自启状态:', enabled)
-      return { success: true, enabled: enabled }
+      const state = loginItem.readAutoStartState(app)
+      console.log('当前开机自启状态:', state)
+      return { success: true, enabled: state.enabled, silent: state.silent }
     } catch (error) {
       console.error('获取开机自启状态失败:', error)
       return { success: false, error: error.message }

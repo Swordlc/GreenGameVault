@@ -6,6 +6,13 @@
   >
     <div class="tag-panel-header">
       <h4>{{ title || '标签选择' }}</h4>
+      <!-- 分类一多时，一键全折叠/全展开（状态与单个分类一起记在本地） -->
+      <button
+        v-if="hasSections"
+        class="tag-panel-toggle-all"
+        :title="allCollapsed ? '展开全部分类' : '折叠全部分类'"
+        @click="toggleAllSections"
+      >{{ allCollapsed ? '展开全部' : '折叠全部' }}</button>
     </div>
     <div class="tag-panel-body">
       <!-- 搜索框（可选） -->
@@ -26,25 +33,34 @@
           class="tag-list-section"
         >
           <div class="tag-list-title">
-            <span>{{ field.label }}</span>
+            <span class="tag-list-label">{{ field.label }}</span>
             <span class="tag-count-badge">{{ getFilteredAvailableTagsForField(field).length }}</span>
-          </div>
-          <div v-if="getFilteredAvailableTagsForField(field).length > 0" class="tag-list">
+            <!-- 折叠 / 展开这个分类（作者 / 开发商 / 引擎 / 标签… 各自独立） -->
             <button
-              v-for="tagItem in getFilteredAvailableTagsForField(field)"
-              :key="field.key + '-' + getTagName(tagItem)"
-              class="tag-item-btn"
-              :class="{ 'tag-item-selected': isTagSelectedInField(tagItem, field.currentTags) }"
-              @click="handleTagClickForField(tagItem, field.key)"
-            >
-              <span class="tag-name">{{ getTagName(tagItem) }}</span>
-              <span v-if="getTagCount(tagItem)" class="tag-count">{{ getTagCount(tagItem) }}</span>
-              <span v-if="isTagSelectedInField(tagItem, field.currentTags)" class="tag-check">✓</span>
-            </button>
+              class="tag-section-toggle"
+              :class="{ collapsed: isSectionCollapsed(field.key) }"
+              :title="isSectionCollapsed(field.key) ? `展开「${field.label}」` : `折叠「${field.label}」`"
+              @click="toggleSection(field.key)"
+            >{{ isSectionCollapsed(field.key) ? '▸' : '▾' }}</button>
           </div>
-          <div v-else class="tag-empty-state tag-empty-inline">
-            <p>{{ emptyMessage || '暂无可用标签' }}</p>
-          </div>
+          <template v-if="!isSectionCollapsed(field.key)">
+            <div v-if="getFilteredAvailableTagsForField(field).length > 0" class="tag-list">
+              <button
+                v-for="tagItem in getFilteredAvailableTagsForField(field)"
+                :key="field.key + '-' + getTagName(tagItem)"
+                class="tag-item-btn"
+                :class="{ 'tag-item-selected': isTagSelectedInField(tagItem, field.currentTags) }"
+                @click="handleTagClickForField(tagItem, field.key)"
+              >
+                <span class="tag-name">{{ getTagName(tagItem) }}</span>
+                <span v-if="getTagCount(tagItem)" class="tag-count">{{ getTagCount(tagItem) }}</span>
+                <span v-if="isTagSelectedInField(tagItem, field.currentTags)" class="tag-check">✓</span>
+              </button>
+            </div>
+            <div v-else class="tag-empty-state tag-empty-inline">
+              <p>{{ emptyMessage || '暂无可用标签' }}</p>
+            </div>
+          </template>
         </div>
       </template>
 
@@ -52,10 +68,16 @@
       <template v-else>
         <div v-if="filteredAvailableTags && filteredAvailableTags.length > 0" class="tag-list-section">
           <div class="tag-list-title">
-            <span>{{ title || '标签选择' }}</span>
+            <span class="tag-list-label">{{ title || '标签选择' }}</span>
             <span class="tag-count-badge">{{ filteredAvailableTags.length }}</span>
+            <button
+              class="tag-section-toggle"
+              :class="{ collapsed: isSectionCollapsed(SINGLE_SECTION_KEY) }"
+              :title="isSectionCollapsed(SINGLE_SECTION_KEY) ? '展开' : '折叠'"
+              @click="toggleSection(SINGLE_SECTION_KEY)"
+            >{{ isSectionCollapsed(SINGLE_SECTION_KEY) ? '▸' : '▾' }}</button>
           </div>
-          <div class="tag-list">
+          <div v-if="!isSectionCollapsed(SINGLE_SECTION_KEY)" class="tag-list">
             <button
               v-for="tagItem in filteredAvailableTags"
               :key="getTagName(tagItem)"
@@ -129,6 +151,51 @@ export default {
   setup(props, { emit }) {
     const searchQuery = ref('')
 
+    // ===== 分类折叠（2026-10-13，1.5.0）=====
+    // 作者 / 开发商 / 引擎 / 标签 各自独立折叠，状态记在本地，下次打开还是这个样子。
+    const SINGLE_SECTION_KEY = '__single__'
+    const COLLAPSE_STORAGE_KEY = 'ggv-tag-panel-collapsed'
+    const collapsedSections = ref<Record<string, boolean>>({})
+
+    try {
+      const raw = localStorage.getItem(COLLAPSE_STORAGE_KEY)
+      if (raw) collapsedSections.value = JSON.parse(raw) || {}
+    } catch (error) {
+      console.warn('[TagSelectionPanel] 读取折叠状态失败:', error)
+    }
+
+    const persistCollapsed = () => {
+      try {
+        localStorage.setItem(COLLAPSE_STORAGE_KEY, JSON.stringify(collapsedSections.value))
+      } catch (error) {
+        console.warn('[TagSelectionPanel] 保存折叠状态失败:', error)
+      }
+    }
+
+    const isSectionCollapsed = (key: string): boolean => collapsedSections.value[key] === true
+
+    const toggleSection = (key: string) => {
+      collapsedSections.value = { ...collapsedSections.value, [key]: !isSectionCollapsed(key) }
+      persistCollapsed()
+    }
+
+    /** 当前面板里所有分类的 key（多区块用字段 key，单区块用保留 key） */
+    const sectionKeys = computed<string[]>(() => {
+      if (props.tagFields && props.tagFields.length > 0) return props.tagFields.map(field => field.key)
+      return [SINGLE_SECTION_KEY]
+    })
+
+    const hasSections = computed(() => sectionKeys.value.length > 1)
+    const allCollapsed = computed(() => sectionKeys.value.every(key => isSectionCollapsed(key)))
+
+    const toggleAllSections = () => {
+      const next: Record<string, boolean> = { ...collapsedSections.value }
+      const target = !allCollapsed.value
+      for (const key of sectionKeys.value) next[key] = target
+      collapsedSections.value = next
+      persistCollapsed()
+    }
+
     // 过滤可用标签
     const filteredAvailableTags = computed(() => {
       if (!props.availableTags || props.availableTags.length === 0) {
@@ -190,6 +257,13 @@ export default {
 
     return {
       searchQuery,
+      SINGLE_SECTION_KEY,
+      collapsedSections,
+      isSectionCollapsed,
+      toggleSection,
+      hasSections,
+      allCollapsed,
+      toggleAllSections,
       filteredAvailableTags,
       getFilteredAvailableTagsForField,
       getTagName,
@@ -207,14 +281,15 @@ export default {
 .tag-selection-panel {
   background: var(--bg-secondary);
   border-radius: 12px;
+  /* 默认宽度给个兜底；实际宽度由编辑对话框按"窗口比例 + 主人拖过的宽度"用行内样式覆盖 */
   width: 300px;
   max-width: 90vw;
   max-height: 90vh;
   overflow-y: auto;
   box-shadow: 0 20px 40px var(--shadow-medium);
-  transition: all 0.3s ease;
   flex-shrink: 0;
   animation: slideInRight 0.3s ease;
+  /* 注意：这里不要写 transition: all —— 拖拽调宽时会被 0.3s 动画拖成"橡皮筋"手感 */
 }
 
 @keyframes slideInRight {
@@ -235,6 +310,66 @@ export default {
   top: 0;
   background: var(--bg-secondary);
   z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tag-panel-toggle-all {
+  padding: 3px 8px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.tag-panel-toggle-all:hover {
+  color: var(--text-primary);
+  border-color: var(--accent-color);
+}
+
+/* 分类标题行：名称 + 数量徽章 + 折叠箭头 */
+.tag-list-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.tag-list-label {
+  font-weight: 500;
+}
+
+.tag-section-toggle {
+  margin-left: auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  line-height: 1;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.tag-section-toggle:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  border-color: var(--border-color);
+}
+
+.tag-section-toggle.collapsed {
+  color: var(--accent-color);
 }
 
 .tag-panel-header h4 {

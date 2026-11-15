@@ -9,7 +9,8 @@
  *  4. 纯函数 + 可注入 rng / now，不依赖 Electron / DOM，便于单测。
  *
  * 三条链路的口径：
- *  - most-played（最常游玩）：游戏时长 0.7 + 启动次数 0.3（各自按库内最大值归一化）
+ *  - most-played（最常游玩）：只按启动次数（库内最大值归一化）。
+ *    刻意不掺时长：时长会被「忘关游戏」堆成异常值，还会抬高库内分母、把别的游戏压扁。
  *  - recent（最近游玩）    ：最后游玩时间越新越靠前；从未玩过的不参与
  *  - up-next（接下来游玩） ：空置天数越大越靠前；玩过的按最后游玩时间、没玩过的按添加时间
  */
@@ -46,10 +47,6 @@ export const CHAINS: ChainMeta[] = [
   { id: 'recent', icon: '🕒', titleKey: 'home.chainRecent', hintKey: 'home.chainRecentHint' },
   { id: 'up-next', icon: '⏳', titleKey: 'home.chainUpNext', hintKey: 'home.chainUpNextHint' }
 ]
-
-/** 时长与次数的权重（主人钦定：0.7 / 0.3） */
-const PLAY_TIME_WEIGHT = 0.7
-const PLAY_COUNT_WEIGHT = 0.3
 
 /** 权重曲线指数：越大越向榜首集中 */
 const WEIGHT_GAMMA = 1.5
@@ -216,16 +213,14 @@ export function scoreChain(games: HomeGame[], chainId: ChainId, now: number = Da
   let scored: Array<{ item: HomeGame; metric: number }>
 
   if (chainId === 'most-played') {
-    // 只考虑玩过的（playTime / playCount 至少有一个 > 0）
-    const played = games.filter(game => game.playTime > 0 || game.playCount > 0)
-    const maxPlayTime = played.reduce((max, game) => Math.max(max, game.playTime), 0)
-    const maxPlayCount = played.reduce((max, game) => Math.max(max, game.playCount), 0)
+    // 只认「打开次数」：时长会被忘关堆成异常值，不参与打分、也不参与资格判定。
+    // 只有时长没有次数的历史数据（理论上不该存在）在其余两条链路里仍能看到。
+    const launched = games.filter(game => game.playCount > 0)
+    const maxPlayCount = launched.reduce((max, game) => Math.max(max, game.playCount), 0)
 
-    scored = played.map(game => ({
+    scored = launched.map(game => ({
       item: game,
-      metric:
-        (maxPlayTime > 0 ? PLAY_TIME_WEIGHT * (game.playTime / maxPlayTime) : 0) +
-        (maxPlayCount > 0 ? PLAY_COUNT_WEIGHT * (game.playCount / maxPlayCount) : 0)
+      metric: maxPlayCount > 0 ? game.playCount / maxPlayCount : 0
     }))
   } else if (chainId === 'recent') {
     // 必须有最后游玩时间；metric 用「越大越新」
@@ -438,7 +433,7 @@ export function describeGame(chainId: ChainId, game: HomeGame, now: number = Dat
   if (chainId === 'most-played') {
     return {
       key: 'home.captionMostPlayed',
-      params: { time: formatDurationText(game.playTime), count: game.playCount }
+      params: { count: game.playCount }
     }
   }
 

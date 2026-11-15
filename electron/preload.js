@@ -154,8 +154,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 打开文件所在文件夹
   openFileFolder: (filePath) => ipcRenderer.invoke('open-file-folder', filePath),
   
-  // 开机自启功能
-  setAutoStart: (enabled) => ipcRenderer.invoke('set-auto-start', enabled),
+  // 开机自启功能（options.silent：开机时静默启动，只进托盘不弹窗）
+  setAutoStart: (enabled, options) => ipcRenderer.invoke('set-auto-start', enabled, options || {}),
   getAutoStart: () => ipcRenderer.invoke('get-auto-start'),
   
   // 系统托盘功能
@@ -215,6 +215,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
   videoRelink: (payload) => ipcRenderer.invoke('video-relink', payload),
   // 「整个文件夹重新关联到…」：指认丢失目录的新位置，批量算好每条的字段
   videoRelinkBatch: (payload) => ipcRenderer.invoke('video-relink-batch', payload),
+  // ===== 视频页多选批量工具（2026-10-10）=====
+  // 探测 PotPlayer：安装位置 / 是否在运行 / 默认播放列表文件
+  potPlayerInfo: (payload) => ipcRenderer.invoke('potplayer-info', payload || {}),
+  // 把选中的视频写进一份具名播放列表（GGV-<标签>.dpl），open=true 时顺带交给 PotPlayer（追加）
+  potPlayerWritePlaylist: (payload) => ipcRenderer.invoke('potplayer-write-playlist', payload || {}),
+  // 把选中的文件放进剪贴板（等同资源管理器里 Ctrl+C，GGV 不碰文件本体）
+  clipboardCopyFiles: (payload) => ipcRenderer.invoke('clipboard-copy-files', payload || {}),
+  // 回读剪贴板里的文件列表（自检）
+  clipboardReadFiles: () => ipcRenderer.invoke('clipboard-read-files'),
+  // ===== 左栏标签编辑（2026-10-13，1.5.0）=====
+  // 重命名 / 合并 / 移除一个标签：改的是全库同类型记录里该字段的值，写库前自动留一份备份
+  tagOpApply: (payload) => ipcRenderer.invoke('tag-op-apply', payload || {}),
+  // 撤销一次标签操作（不传 backupPath 就是撤销最近一次）
+  tagOpUndo: (payload) => ipcRenderer.invoke('tag-op-undo', payload || {}),
+  // 查最近一次可撤销的标签操作（左栏「撤销」入口用）
+  tagOpLastBackup: (payload) => ipcRenderer.invoke('tag-op-last-backup', payload || {}),
   // 监听绑定目录的变化
   onVideoLibraryChanged: (callback) => {
     const fn = (event, data) => callback(data)
